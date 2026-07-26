@@ -1,0 +1,1215 @@
+//@version=6
+
+// =============================================================================
+// Key Level Finder README
+// =============================================================================
+// 本 Pine 脚本由 NeuNue 开发，主要基于 QQQ 进行开发和校准。
+// 目标是帮助观察美股大盘股与高流动性 ETF 的支撑、阻力，
+// 以及价格容易反复争夺的区域。
+//
+// 本脚本适合基于关键价位进行回踩后右侧交易的交易者。
+// 绝不适用于以本脚本所绘制的关键价位有效作为预设，
+// 然后提前在支撑位进行限价挂单抄底左侧交易的人。
+//
+// 本脚本适合基于关键价位进行回踩后右侧交易的交易者。
+// 绝不适用于以本脚本所绘制的关键价位有效作为预设，
+// 然后提前在支撑位进行限价挂单抄底左侧交易的人。
+//
+// 本脚本适合基于关键价位进行回踩后右侧交易的交易者。
+// 绝不适用于以本脚本所绘制的关键价位有效作为预设，
+// 然后提前在支撑位进行限价挂单抄底左侧交易的人。
+//
+// 脚本固定使用 1 小时常规交易时段 K 线，仅支持 1 小时及以下图表周期。
+// 它会回看价格反复停留、明显拒绝、放量和留下跳空缺口的位置，
+// 再按照各项权重计算，并把统计上相近的价位合并为关键价位区间。
+//
+// 该脚本适用于 SPY、QQQ、SOXX，
+// 以及 AAPL、MSFT、NVDA 等成交活跃的大盘股。
+// 对小盘股、低流动性标的、外汇、加密货币或全天交易期货的适配度较低，
+// 直接套用时，结果可能不完全符合其实际市场行为。建议按需要调整权重分配
+//
+// 【权重值分别表示什么？】
+// 1. 触及与拒绝（默认40）
+//    可以理解为“这个位置以前到底有没有被机构资金防守过”。
+//    价格多次到这里就反弹或回落，或者留下明显长影线，
+//    这一项计算的分值就会增加。
+//    如果图上总出现只反应过一次的杂乱价位，
+//    也可以提高这一项，或者同时提高“最低强度”。
+//
+// 2. 多空转换（默认20）
+//    关注“原来的阻力突破后变成支撑”以及“原来的支撑跌破后变成阻力”。
+//    如果你主要做突破、回踩和趋势延续，可以提高这一项；
+//    如果标的长期横盘，很少走出有效突破，可以适当降低。
+//
+// 3. 相对成交量（默认20）
+//    关注关键位置形成时，参与交易的人是不是明显比平时多。放量意味着更多
+//    资金在这里达成过共识。成交量稳定、流动性好的大盘股可以保持默认值；
+//    如果财报、指数调仓经常制造一次性的放量，可以适当降低，
+//    避免单根K线对结果影响过大。
+//
+// 4. 缺口（默认10）
+//    关注开盘跳空后留下的上下边界。
+//    盘前、盘后的财报或消息面导致的跳空经常会成为后续支撑、
+//    阻力或回补目标。
+//    交易经常跳空的成长股、半导体股时可以提高；
+//    走势平稳、很少出现有效缺口的ETF或大盘股可以降低。
+//
+// 5. 整数共振（默认10）
+//    关注700、705、710这类容易被交易者记住和挂单的整数位置。如果标的经常
+//    围绕5美元或10美元整数位反应，可以提高；
+//    如果画出的区间过度集中在整数位，却没有明显历史反应，就应该降低。
+//
+// 【怎么调整比较稳妥】
+// - 权重并非最佳值。对于同一标的不同的行情，最佳的权重值也不一样。
+// - 这些数字表示相对权重，不要求加起来等于100。全部同时乘以两倍不会
+//   改变结果；把某项设为0，才表示完全不考虑这一类证据。
+// - 建议从默认值开始，每次只改一项，每次调整5—10点。
+//   先观察误判或漏判属于哪一类，再改对应权重，
+//   不要为了贴合一段历史一次性把所有参数都改掉。
+// - 杂乱弱位太多：提高“触及与拒绝”或“最低强度”。
+// - 突破回踩位经常漏掉：提高“多空转换”。
+// - 放量形成的价位不够突出：提高“相对成交量”。
+// - 财报或消息面导致的缺口边界不够突出：提高“缺口”。
+// - 整数位太多或太少：降低或提高“整数共振”。
+//
+// 【三套参考配置适合什么标的】
+// 权重顺序：触及拒绝 / 多空转换 / 相对成交量 / 缺口 / 整数共振。
+//
+// - 均衡型：40 / 20 / 20 / 10 / 10
+//   默认配置，也是基于QQQ主要调教的配置。
+//   比较符合我自身主观交易中手动绘制的关键价位。
+//   适合指数ETF，以及成交活跃、走势相对连续的大盘科技股。
+//   适合作为盘中观察和波段交易的参考。
+//
+// - 传统支撑阻力型：50 / 25 / 15 / 5 / 5
+//   更相信反复触及和突破回踩，弱化一次性放量、缺口及整数位。
+//   适合走势较稳定、历史价位反复有效的SPY、指数ETF、成熟大盘股，
+//   以及偏区间或均值回归的交易方式。
+//
+// - 事件与缺口型：30 / 15 / 25 / 20 / 10
+//   更重视放量和跳空。适合财报反应明显、消息驱动较强且流动性充足的成长型
+//   大盘股和热门股。它不建议用于成交稀疏的小盘消息股，因为异常成交量和
+//   滑点会让历史结果看起来比实际可交易性更好。
+//
+// 【数据仅供参考，不适用于实时交易，不构成投资建议】
+// 本脚本会读取当前尚未收盘的1小时K线，
+// 所以当前小时内的区间和强弱可能随着价格、影线及成交量变化。
+// 属于部分实时重绘；1小时K线收盘以后，
+// 由这根K线产生的指标才会确定下来。
+//
+// 中枢价位的高低区间还需要后面几根K线来辅助确认。
+// 确认以后，区间会从原枢轴发生的时间开始重绘，
+// 因此回看图表时可能看起来像是它当时就已经出现，
+// 实际上实时交易中要等确认K线结束后才能知道。
+// 脚本没有使用lookahead_on读取未来数据，
+// 但仍不建议当作历史进场信号进行回测。
+//
+// 实时交易时，更适合把它当作支撑阻力地图：
+// 以已经收盘并确认的1小时区间为主，
+// 再结合5min K线所展示的价格行为决定是否进场。
+// 不要仅凭当前小时内刚出现或分数正在变化的区间自动下单。
+// 它既能辅助实时观察，也能用于回溯研究，但不是量化交易工具。
+// =============================================================================
+
+indicator(
+     "1小时关键价位热力图",
+     shorttitle = "1H 关键区",
+     overlay = true,
+     max_boxes_count = 12,
+     max_lines_count = 12,
+     max_labels_count = 12
+)
+
+// 固定参数
+const string ANALYSIS_TIMEFRAME = "60"
+const int MAX_DRAW_ZONES = 12
+const int MAX_ENGINE_ZONES = 120
+const int CALC_BARS_COUNT = 2200
+const int MIN_HISTORY_DAYS = 120
+const float SHORT_DAILY_DECAY = 0.96593633
+const float LONG_DAILY_DECAY = 0.99723125
+const float STRUCTURE_RANK_WEIGHT = 0.75
+const float DISTANCE_RANK_WEIGHT = 0.25
+const float DISTANCE_DECAY_ATR = 6.0
+const float STRUCTURE_FLOOR_RATIO = 0.50
+
+// 输入分组
+const string GROUP_CORE = "核心设置"
+const string GROUP_ROUND = "整数位置"
+const string GROUP_DISPLAY = "显示设置"
+const string GROUP_ADVANCED = "高级权重"
+
+string sensitivityInput = input.string(
+     "标准",
+     "灵敏度",
+     options = ["保守", "标准", "密集"],
+     tooltip = "保守模式减少候选区；密集模式保留更多局部结构。",
+     group = GROUP_CORE
+)
+int maxZonesInput = input.int(
+     8,
+     "最大区间数",
+     minval = 4,
+     maxval = MAX_DRAW_ZONES,
+     tooltip = "限制图上同时显示的高强度区间数量。",
+     group = GROUP_CORE
+)
+float minStrengthInput = input.float(
+     35.0,
+     "最低强度",
+     minval = 0.0,
+     maxval = 100.0,
+     step = 1.0,
+     tooltip = "低于该可交易性分数的区间不会显示。分数由历史结构与当前距离共同决定。",
+     group = GROUP_CORE
+)
+float displayMergeAtrInput = input.float(
+     0.75,
+     "邻近区间合并距离（ATR）",
+     minval = 0.25,
+     maxval = 1.50,
+     step = 0.05,
+     tooltip = "显示前按1小时ATR合并相邻微区间。数值越大，关键区间越少且覆盖范围越宽。",
+     group = GROUP_CORE
+)
+string widthInput = input.string(
+     "标准",
+     "区间宽度",
+     options = ["窄", "标准", "宽"],
+     tooltip = "区间宽度由事件发生时的1小时ATR决定。",
+     group = GROUP_CORE
+)
+
+string roundModeInput = input.string(
+     "自动",
+     "整数步长",
+     options = ["自动", "手动"],
+     tooltip = "自动模式会按标的价格选择适合的整数网格。",
+     group = GROUP_ROUND
+)
+float manualRoundStepInput = input.float(
+     5.0,
+     "手动基础步长",
+     minval = 0.01,
+     step = 0.5,
+     tooltip = "仅在整数步长选择手动时生效。",
+     group = GROUP_ROUND
+)
+
+bool showCenterInput = input.bool(
+     true,
+     "显示中心线",
+     tooltip = "中心线用于和人工标注价位比较，热力区间本身才是有效范围。",
+     group = GROUP_DISPLAY
+)
+bool showLabelsInput = input.bool(
+     true,
+     "显示价位与强度",
+     tooltip = "右侧标签格式为：中心价 | 可交易性分数。",
+     group = GROUP_DISPLAY
+)
+float maxDistanceAtrInput = input.float(
+     12.0,
+     "最大显示距离（ATR）",
+     minval = 2.0,
+     maxval = 30.0,
+     step = 1.0,
+     tooltip = "隐藏距离现价过远的历史区间。",
+     group = GROUP_DISPLAY
+)
+color heatColorInput = input.color(
+     color.rgb(91, 76, 255),
+     "热力颜色",
+     tooltip = "颜色只表达关键性强弱，不表达上涨或下跌方向。",
+     group = GROUP_DISPLAY
+)
+
+float touchWeightInput = input.float(
+     40.0,
+     "触及与拒绝权重",
+     minval = 0.0,
+     maxval = 100.0,
+     step = 1.0,
+     group = GROUP_ADVANCED
+)
+float roleWeightInput = input.float(
+     20.0,
+     "多空转换权重",
+     minval = 0.0,
+     maxval = 100.0,
+     step = 1.0,
+     group = GROUP_ADVANCED
+)
+float volumeWeightInput = input.float(
+     20.0,
+     "相对成交量权重",
+     minval = 0.0,
+     maxval = 100.0,
+     step = 1.0,
+     group = GROUP_ADVANCED
+)
+float gapWeightInput = input.float(
+     10.0,
+     "缺口权重",
+     minval = 0.0,
+     maxval = 100.0,
+     step = 1.0,
+     group = GROUP_ADVANCED
+)
+float roundWeightInput = input.float(
+     10.0,
+     "整数共振权重",
+     minval = 0.0,
+     maxval = 100.0,
+     step = 1.0,
+     group = GROUP_ADVANCED
+)
+
+// 区间保存各类证据，短周期和长周期分别衰减
+type Zone
+    float center
+    float halfWidth
+    float centerWeight
+    float touchShort
+    float touchLong
+    float roleShort
+    float roleLong
+    float volumeShort
+    float volumeLong
+    float gapShort
+    float gapLong
+    int firstTime
+    int lastEventTime
+    int lastTouchBar
+    int lastTouchDay
+    int pendingTouchBar
+    int pendingTouchSide
+    bool pendingRole
+    int lastRelation
+    int lastRelationBar
+    int lastBreakSide
+    int lastBreakBar
+    bool gapActive
+    int gapDirection
+    float gapFillPrice
+
+// 计算上下文只向主图返回绘图所需的数据
+type ZoneSnapshot
+    array<float> centers
+    array<float> halfWidths
+    array<float> scores
+    array<int> firstTimes
+    float atr
+    float sourceClose
+    int processedDays
+    bool volumeAvailable
+
+f_clamp(float value, float lower, float upper) =>
+    math.max(lower, math.min(upper, value))
+
+f_combined(float shortValue, float longValue) =>
+    0.60 * shortValue + 0.40 * longValue
+
+f_total_evidence(Zone zone) =>
+    f_combined(zone.touchShort, zone.touchLong) +
+     f_combined(zone.roleShort, zone.roleLong) +
+     f_combined(zone.volumeShort, zone.volumeLong) +
+     f_combined(zone.gapShort, zone.gapLong)
+
+f_add_evidence(Zone zone, float touchValue, float roleValue, float volumeValue, float gapValue) =>
+    zone.touchShort += touchValue
+    zone.touchLong += touchValue
+    zone.roleShort += roleValue
+    zone.roleLong += roleValue
+    zone.volumeShort += volumeValue
+    zone.volumeLong += volumeValue
+    zone.gapShort += gapValue
+    zone.gapLong += gapValue
+
+f_decay_zone(Zone zone) =>
+    zone.touchShort *= SHORT_DAILY_DECAY
+    zone.touchLong *= LONG_DAILY_DECAY
+    zone.roleShort *= SHORT_DAILY_DECAY
+    zone.roleLong *= LONG_DAILY_DECAY
+    zone.volumeShort *= SHORT_DAILY_DECAY
+    zone.volumeLong *= LONG_DAILY_DECAY
+    zone.gapShort *= SHORT_DAILY_DECAY
+    zone.gapLong *= LONG_DAILY_DECAY
+    zone.centerWeight *= LONG_DAILY_DECAY
+
+f_event_half_width(float price, float eventAtr, float widthFactor) =>
+    float rawWidth = eventAtr * widthFactor
+    float minWidth = math.max(price * 0.0008, syminfo.mintick * 4.0)
+    float maxWidth = math.max(price * 0.0030, minWidth)
+    f_clamp(rawWidth, minWidth, maxWidth)
+
+f_auto_round_steps(float price, float manualStep, bool useManual) =>
+    float minorStep = na
+    float majorStep = na
+    float superStep = na
+    if useManual
+        minorStep := manualStep
+        majorStep := manualStep * 2.0
+        superStep := manualStep * 10.0
+    else if price < 100.0
+        minorStep := 1.0
+        majorStep := 5.0
+        superStep := 10.0
+    else if price < 1000.0
+        minorStep := 5.0
+        majorStep := 10.0
+        superStep := 50.0
+    else
+        minorStep := 10.0
+        majorStep := 50.0
+        superStep := 100.0
+    [minorStep, majorStep, superStep]
+
+f_near_grid(float price, float step, float tolerance) =>
+    float nearest = math.round(price / step) * step
+    math.abs(price - nearest) <= tolerance
+
+f_round_quality(float price, float halfWidth, float manualStep, bool useManual) =>
+    [minorStep, majorStep, superStep] = f_auto_round_steps(price, manualStep, useManual)
+    float tolerance = math.max(halfWidth * 0.60, syminfo.mintick * 3.0)
+    float quality = 0.0
+    if f_near_grid(price, minorStep, tolerance)
+        quality := 0.50
+    if f_near_grid(price, majorStep, tolerance)
+        quality := 0.80
+    if f_near_grid(price, superStep, tolerance)
+        quality := 1.00
+    quality
+
+f_zone_score(
+     Zone zone,
+     float touchWeight,
+     float roleWeight,
+     float volumeWeight,
+     float gapWeight,
+     float roundWeight,
+     float manualStep,
+     bool useManual
+) =>
+    float touchComponent = f_clamp(f_combined(zone.touchShort, zone.touchLong) / 5.0, 0.0, 1.0)
+    float roleComponent = f_clamp(f_combined(zone.roleShort, zone.roleLong) / 2.0, 0.0, 1.0)
+    float volumeComponent = f_clamp(f_combined(zone.volumeShort, zone.volumeLong) / 3.0, 0.0, 1.0)
+    float gapComponent = f_clamp(f_combined(zone.gapShort, zone.gapLong) / 1.5, 0.0, 1.0)
+    float roundComponent = f_round_quality(zone.center, zone.halfWidth, manualStep, useManual)
+    float weightSum = math.max(
+         touchWeight + roleWeight + volumeWeight + gapWeight + roundWeight,
+         1.0
+    )
+    100.0 * (
+         touchComponent * touchWeight +
+         roleComponent * roleWeight +
+         volumeComponent * volumeWeight +
+         gapComponent * gapWeight +
+         roundComponent * roundWeight
+    ) / weightSum
+
+f_find_merge_target(
+     array<Zone> zones,
+     float price,
+     float eventWidth,
+     bool gapActive,
+     int gapDirection,
+     float gapFillPrice
+) =>
+    int bestIndex = -1
+    float bestDistance = 1e20
+    int zoneCount = array.size(zones)
+    if zoneCount > 0
+        for index = 0 to zoneCount - 1
+            Zone zone = array.get(zones, index)
+            float distance = math.abs(zone.center - price)
+            float mergeRadius = 0.45 * (zone.halfWidth + eventWidth)
+            bool incompatibleGap = (
+                 gapActive and
+                 zone.gapActive and
+                 (
+                      gapDirection != zone.gapDirection or
+                      math.abs(gapFillPrice - zone.gapFillPrice) > syminfo.mintick
+                 )
+            )
+            if not incompatibleGap and distance <= mergeRadius and distance < bestDistance
+                bestDistance := distance
+                bestIndex := index
+    bestIndex
+
+f_remove_weakest(array<Zone> zones) =>
+    int weakestIndex = -1
+    float weakestEvidence = 1e20
+    int zoneCount = array.size(zones)
+    if zoneCount > 0
+        for index = 0 to zoneCount - 1
+            Zone zone = array.get(zones, index)
+            float evidence = f_total_evidence(zone)
+            if evidence < weakestEvidence
+                weakestEvidence := evidence
+                weakestIndex := index
+    if weakestIndex >= 0
+        array.remove(zones, weakestIndex)
+
+f_add_candidate(
+     array<Zone> zones,
+     float price,
+     float eventWidth,
+     int eventTime,
+     float touchEvidence,
+     float volumeEvidence,
+     float gapEvidence,
+     bool gapActive,
+     int gapDirection,
+     float gapFillPrice
+) =>
+    int targetIndex = f_find_merge_target(
+         zones,
+         price,
+         eventWidth,
+         gapActive,
+         gapDirection,
+         gapFillPrice
+    )
+    float eventWeight = math.max(touchEvidence + volumeEvidence + gapEvidence, 0.25)
+    if targetIndex >= 0
+        Zone zone = array.get(zones, targetIndex)
+        float newWeight = zone.centerWeight + eventWeight
+        zone.center := (zone.center * zone.centerWeight + price * eventWeight) / newWeight
+        zone.halfWidth := (
+             zone.halfWidth * zone.centerWeight + eventWidth * eventWeight
+        ) / newWeight
+        zone.centerWeight := newWeight
+        zone.firstTime := math.min(zone.firstTime, eventTime)
+        zone.lastEventTime := math.max(zone.lastEventTime, eventTime)
+        f_add_evidence(zone, touchEvidence, 0.0, volumeEvidence, gapEvidence)
+        if gapActive
+            zone.gapActive := true
+            zone.gapDirection := gapDirection
+            zone.gapFillPrice := gapFillPrice
+    else
+        Zone newZone = Zone.new(
+             price,
+             eventWidth,
+             eventWeight,
+             touchEvidence,
+             touchEvidence,
+             0.0,
+             0.0,
+             volumeEvidence,
+             volumeEvidence,
+             gapEvidence,
+             gapEvidence,
+             eventTime,
+             eventTime,
+             int(na),
+             int(na),
+             int(na),
+             0,
+             false,
+             0,
+             int(na),
+             0,
+             int(na),
+             gapActive,
+             gapDirection,
+             gapFillPrice
+        )
+        array.push(zones, newZone)
+    if array.size(zones) > MAX_ENGINE_ZONES
+        f_remove_weakest(zones)
+
+f_merge_overlaps(array<Zone> zones) =>
+    int firstIndex = 0
+    while firstIndex < array.size(zones)
+        int secondIndex = firstIndex + 1
+        while secondIndex < array.size(zones)
+            Zone firstZone = array.get(zones, firstIndex)
+            Zone secondZone = array.get(zones, secondIndex)
+            float distance = math.abs(firstZone.center - secondZone.center)
+            float overlapThreshold = 0.45 * (firstZone.halfWidth + secondZone.halfWidth)
+            bool incompatibleGap = (
+                 firstZone.gapActive and
+                 secondZone.gapActive and
+                 (
+                      firstZone.gapDirection != secondZone.gapDirection or
+                      math.abs(firstZone.gapFillPrice - secondZone.gapFillPrice) > syminfo.mintick
+                 )
+            )
+            if not incompatibleGap and distance <= overlapThreshold
+                float combinedWeight = firstZone.centerWeight + secondZone.centerWeight
+                firstZone.center := (
+                     firstZone.center * firstZone.centerWeight +
+                     secondZone.center * secondZone.centerWeight
+                ) / combinedWeight
+                firstZone.halfWidth := (
+                     firstZone.halfWidth * firstZone.centerWeight +
+                     secondZone.halfWidth * secondZone.centerWeight
+                ) / combinedWeight
+                firstZone.centerWeight := combinedWeight
+                firstZone.touchShort += secondZone.touchShort
+                firstZone.touchLong += secondZone.touchLong
+                firstZone.roleShort += secondZone.roleShort
+                firstZone.roleLong += secondZone.roleLong
+                firstZone.volumeShort += secondZone.volumeShort
+                firstZone.volumeLong += secondZone.volumeLong
+                firstZone.gapShort += secondZone.gapShort
+                firstZone.gapLong += secondZone.gapLong
+                firstZone.firstTime := math.min(firstZone.firstTime, secondZone.firstTime)
+                if na(firstZone.lastTouchBar) or (
+                     not na(secondZone.lastTouchBar) and
+                     secondZone.lastTouchBar > firstZone.lastTouchBar
+                )
+                    firstZone.lastTouchBar := secondZone.lastTouchBar
+                    firstZone.lastTouchDay := secondZone.lastTouchDay
+                if na(firstZone.pendingTouchBar) or (
+                     not na(secondZone.pendingTouchBar) and
+                     secondZone.pendingTouchBar > firstZone.pendingTouchBar
+                )
+                    firstZone.pendingTouchBar := secondZone.pendingTouchBar
+                    firstZone.pendingTouchSide := secondZone.pendingTouchSide
+                    firstZone.pendingRole := secondZone.pendingRole
+                if secondZone.lastEventTime > firstZone.lastEventTime
+                    firstZone.lastEventTime := secondZone.lastEventTime
+                if na(firstZone.lastRelationBar) or (
+                     not na(secondZone.lastRelationBar) and
+                     secondZone.lastRelationBar > firstZone.lastRelationBar
+                )
+                    firstZone.lastRelation := secondZone.lastRelation
+                    firstZone.lastRelationBar := secondZone.lastRelationBar
+                if na(firstZone.lastBreakBar) or (
+                     not na(secondZone.lastBreakBar) and
+                     secondZone.lastBreakBar > firstZone.lastBreakBar
+                )
+                    firstZone.lastBreakSide := secondZone.lastBreakSide
+                    firstZone.lastBreakBar := secondZone.lastBreakBar
+                if secondZone.gapActive
+                    firstZone.gapActive := true
+                    firstZone.gapDirection := secondZone.gapDirection
+                    firstZone.gapFillPrice := secondZone.gapFillPrice
+                array.remove(zones, secondIndex)
+            else
+                secondIndex += 1
+        firstIndex += 1
+
+f_prune_stale(array<Zone> zones) =>
+    int index = array.size(zones) - 1
+    while index >= 0
+        Zone zone = array.get(zones, index)
+        if f_total_evidence(zone) < 0.12
+            array.remove(zones, index)
+        index -= 1
+
+f_update_zone(
+     Zone zone,
+     float currentAtr,
+     float relativeVolume,
+     int cooldownBars,
+     int reactionBars,
+     bool newTradingDay
+) =>
+    if newTradingDay
+        f_decay_zone(zone)
+
+    // 缺口完全回补后只移除缺口证据
+    if zone.gapActive
+        bool gapFilled = (
+             zone.gapDirection == 1 and low <= zone.gapFillPrice
+        ) or (
+             zone.gapDirection == -1 and high >= zone.gapFillPrice
+        )
+        if gapFilled
+            zone.gapActive := false
+            zone.gapShort := 0.0
+            zone.gapLong := 0.0
+
+    float zoneTop = zone.center + zone.halfWidth
+    float zoneBottom = zone.center - zone.halfWidth
+
+    // 在反应观察窗口结束后评估拒绝幅度
+    if not na(zone.pendingTouchBar) and bar_index - zone.pendingTouchBar >= reactionBars
+        float displacement = 0.0
+        if zone.pendingTouchSide != 0 and currentAtr > 0.0
+            displacement := zone.pendingTouchSide * (close - zone.center) / currentAtr
+        if displacement > 0.0
+            float rejectionEvidence = f_clamp(displacement, 0.0, 1.25)
+            f_add_evidence(zone, rejectionEvidence, 0.0, 0.0, 0.0)
+            if zone.pendingRole
+                float roleEvidence = f_clamp(0.50 + displacement, 0.0, 1.25)
+                f_add_evidence(zone, 0.0, roleEvidence, 0.0, 0.0)
+        zone.pendingTouchBar := int(na)
+        zone.pendingTouchSide := 0
+        zone.pendingRole := false
+
+    bool intersects = high >= zoneBottom and low <= zoneTop
+    bool cooldownReady = na(zone.lastTouchBar) or bar_index - zone.lastTouchBar >= cooldownBars
+    if intersects and cooldownReady
+        int approachSide = close[1] > zoneTop ? 1 : close[1] < zoneBottom ? -1 : 0
+        int currentDay = time("D")
+        bool distinctDay = na(zone.lastTouchDay) or currentDay != zone.lastTouchDay
+        float baseTouch = 0.45 + (distinctDay ? 0.20 : 0.0)
+        float volumeEvidence = f_clamp((relativeVolume - 1.0) * 0.50, 0.0, 1.00)
+        f_add_evidence(zone, baseTouch, 0.0, volumeEvidence, 0.0)
+        zone.lastTouchBar := bar_index
+        zone.lastTouchDay := currentDay
+        zone.pendingTouchBar := bar_index
+        zone.pendingTouchSide := approachSide
+        zone.pendingRole := (
+             approachSide != 0 and
+             approachSide == zone.lastBreakSide and
+             not na(zone.lastBreakBar) and
+             bar_index - zone.lastBreakBar <= 40
+        )
+
+    // 收盘直接穿越会削弱区间，后续成功回踩可通过多空转换重新加分
+    float breakBuffer = zone.halfWidth * 0.25
+    int relation = close > zoneTop + breakBuffer ? 1 : close < zoneBottom - breakBuffer ? -1 : 0
+    if relation != 0
+        if zone.lastRelation != 0 and relation != zone.lastRelation
+            zone.touchShort *= 0.96
+            zone.touchLong *= 0.985
+            zone.lastBreakSide := relation
+            zone.lastBreakBar := bar_index
+        zone.lastRelation := relation
+        zone.lastRelationBar := bar_index
+
+f_engine(
+     string sensitivity,
+     float widthFactor,
+     int requestedZones,
+     float minimumStrength,
+     float maxDistanceAtr,
+     float displayMergeAtr,
+     bool useManualRound,
+     float manualRoundStep,
+     float touchWeight,
+     float roleWeight,
+     float volumeWeight,
+     float gapWeight,
+     float roundWeight
+) =>
+    var array<Zone> zones = array.new<Zone>()
+    var array<float> outputCenters = array.new<float>()
+    var array<float> outputWidths = array.new<float>()
+    var array<float> outputScores = array.new<float>()
+    var array<int> outputTimes = array.new<int>()
+    var int processedBars = 0
+    var int processedDays = 0
+    var bool observedVolume = false
+
+    processedBars += 1
+    observedVolume := observedVolume or (not na(volume) and volume > 0.0)
+    bool newTradingDay = ta.change(time("D")) != 0
+    if newTradingDay
+        processedDays += 1
+
+    int pivotLegs = sensitivity == "保守" ? 5 : sensitivity == "密集" ? 3 : 4
+    int cooldownBars = sensitivity == "保守" ? 7 : sensitivity == "密集" ? 3 : 5
+    float gapAtrThreshold = sensitivity == "保守" ? 0.50 : sensitivity == "密集" ? 0.25 : 0.35
+    float relativeVolumeThreshold = sensitivity == "保守" ? 1.80 : sensitivity == "密集" ? 1.25 : 1.50
+    float wickThreshold = sensitivity == "保守" ? 0.45 : sensitivity == "密集" ? 0.25 : 0.35
+
+    float currentAtr = ta.atr(14)
+    float volumeAverage = ta.sma(volume[1], 20)
+    float relativeVolume = (
+         not na(volume) and
+         not na(volumeAverage) and
+         volumeAverage > 0.0
+    ) ? volume / volumeAverage : 1.0
+
+    int existingCount = array.size(zones)
+    if existingCount > 0
+        for index = 0 to existingCount - 1
+            Zone zone = array.get(zones, index)
+            f_update_zone(zone, currentAtr, relativeVolume, cooldownBars, 3, newTradingDay)
+
+    bool candidateAdded = false
+
+    // 已确认枢轴会在右侧K线完成后加入，避免未来数据泄漏
+    float pivotHigh = ta.pivothigh(high, pivotLegs, pivotLegs)
+    float pivotLow = ta.pivotlow(low, pivotLegs, pivotLegs)
+    if not na(pivotHigh) and not na(currentAtr[pivotLegs]) and currentAtr[pivotLegs] > 0.0
+        float pivotAtr = currentAtr[pivotLegs]
+        float pivotRvol = relativeVolume[pivotLegs]
+        float eventWidth = f_event_half_width(pivotHigh, pivotAtr, widthFactor)
+        float volumeEvidence = f_clamp((pivotRvol - 1.0) * 0.60, 0.0, 1.20)
+        f_add_candidate(
+             zones,
+             pivotHigh,
+             eventWidth,
+             time[pivotLegs],
+             0.85,
+             volumeEvidence,
+             0.0,
+             false,
+             0,
+             float(na)
+        )
+        candidateAdded := true
+    if not na(pivotLow) and not na(currentAtr[pivotLegs]) and currentAtr[pivotLegs] > 0.0
+        float pivotAtr = currentAtr[pivotLegs]
+        float pivotRvol = relativeVolume[pivotLegs]
+        float eventWidth = f_event_half_width(pivotLow, pivotAtr, widthFactor)
+        float volumeEvidence = f_clamp((pivotRvol - 1.0) * 0.60, 0.0, 1.20)
+        f_add_candidate(
+             zones,
+             pivotLow,
+             eventWidth,
+             time[pivotLegs],
+             0.85,
+             volumeEvidence,
+             0.0,
+             false,
+             0,
+             float(na)
+        )
+        candidateAdded := true
+
+    // 新交易日首根K线用于识别常规时段跳空
+    if newTradingDay and not na(close[1]) and not na(currentAtr)
+        float previousClose = close[1]
+        float gapSize = math.abs(open - previousClose)
+        float minimumGap = math.max(currentAtr * gapAtrThreshold, previousClose * 0.0030)
+        if gapSize >= minimumGap
+            int gapDirection = open > previousClose ? 1 : -1
+            bool filledOnOpeningBar = (
+                 gapDirection == 1 and low <= previousClose
+            ) or (
+                 gapDirection == -1 and high >= previousClose
+            )
+            float openingGapEvidence = filledOnOpeningBar ? 0.0 : 1.0
+            float lowerEdge = math.min(open, previousClose)
+            float upperEdge = math.max(open, previousClose)
+            float lowerWidth = f_event_half_width(lowerEdge, currentAtr, widthFactor)
+            float upperWidth = f_event_half_width(upperEdge, currentAtr, widthFactor)
+            f_add_candidate(
+                 zones,
+                 lowerEdge,
+                 lowerWidth,
+                 time,
+                 0.20,
+                 0.0,
+                 openingGapEvidence,
+                 not filledOnOpeningBar,
+                 gapDirection,
+                 previousClose
+            )
+            f_add_candidate(
+                 zones,
+                 upperEdge,
+                 upperWidth,
+                 time,
+                 0.20,
+                 0.0,
+                 openingGapEvidence,
+                 not filledOnOpeningBar,
+                 gapDirection,
+                 previousClose
+            )
+            candidateAdded := true
+
+    // 放量拒绝K线补充没有形成标准枢轴的结构边缘
+    float candleRange = high - low
+    if (
+         candleRange > 0.0 and
+         not na(currentAtr) and
+         currentAtr > 0.0 and
+         relativeVolume >= relativeVolumeThreshold
+    )
+        float lowerWickRatio = (math.min(open, close) - low) / candleRange
+        float upperWickRatio = (high - math.max(open, close)) / candleRange
+        float volumeEvidence = f_clamp((relativeVolume - 1.0) * 0.75, 0.0, 1.20)
+        if lowerWickRatio >= wickThreshold
+            float eventWidth = f_event_half_width(low, currentAtr, widthFactor)
+            f_add_candidate(
+                 zones,
+                 low,
+                 eventWidth,
+                 time,
+                 0.65,
+                 volumeEvidence,
+                 0.0,
+                 false,
+                 0,
+                 float(na)
+            )
+            candidateAdded := true
+        if upperWickRatio >= wickThreshold
+            float eventWidth = f_event_half_width(high, currentAtr, widthFactor)
+            f_add_candidate(
+                 zones,
+                 high,
+                 eventWidth,
+                 time,
+                 0.65,
+                 volumeEvidence,
+                 0.0,
+                 false,
+                 0,
+                 float(na)
+            )
+            candidateAdded := true
+
+    if candidateAdded
+        f_merge_overlaps(zones)
+    if processedBars % 25 == 0
+        f_prune_stale(zones)
+
+    // 集合只在请求上下文的最后一根K线上返回，避免为每根历史K线复制数组
+    ZoneSnapshot result = na
+    if barstate.islast
+        array.clear(outputCenters)
+        array.clear(outputWidths)
+        array.clear(outputScores)
+        array.clear(outputTimes)
+
+        array<float> eligibleScores = array.new<float>()
+        array<int> eligibleIndices = array.new<int>()
+        int zoneCount = array.size(zones)
+        if zoneCount > 0 and not na(currentAtr) and currentAtr > 0.0
+            for index = 0 to zoneCount - 1
+                Zone zone = array.get(zones, index)
+                float structureScore = f_zone_score(
+                     zone,
+                     touchWeight,
+                     roleWeight,
+                     volumeWeight,
+                     gapWeight,
+                     roundWeight,
+                     manualRoundStep,
+                     useManualRound
+                )
+                float distanceAtr = math.abs(zone.center - close) / currentAtr
+                float distanceScore = 100.0 * math.exp(-distanceAtr / DISTANCE_DECAY_ATR)
+                float tradabilityScore = (
+                     structureScore * STRUCTURE_RANK_WEIGHT +
+                     distanceScore * DISTANCE_RANK_WEIGHT
+                )
+                bool withinDistance = distanceAtr <= maxDistanceAtr
+                bool enoughStructure = structureScore >= minimumStrength * STRUCTURE_FLOOR_RATIO
+                if tradabilityScore >= minimumStrength and enoughStructure and withinDistance
+                    array.push(eligibleScores, tradabilityScore)
+                    array.push(eligibleIndices, index)
+
+        // 先以最高分微区间为锚点，再按ATR距离聚合邻近价位
+        int eligibleCount = array.size(eligibleScores)
+        array<float> groupAnchors = array.new<float>()
+        array<float> groupCenters = array.new<float>()
+        array<float> groupWidths = array.new<float>()
+        array<float> groupScores = array.new<float>()
+        array<float> groupWeights = array.new<float>()
+        array<int> groupTimes = array.new<int>()
+        if eligibleCount > 0
+            array<int> sortedCandidatePositions = array.sort_indices(
+                 eligibleScores,
+                 order.descending
+            )
+            for orderPosition = 0 to eligibleCount - 1
+                int candidatePosition = array.get(sortedCandidatePositions, orderPosition)
+                int zoneIndex = array.get(eligibleIndices, candidatePosition)
+                Zone candidateZone = array.get(zones, zoneIndex)
+                float candidateScore = array.get(eligibleScores, candidatePosition)
+                float mergeDistance = currentAtr * displayMergeAtr
+                int targetGroup = -1
+                float nearestDistance = 1e20
+                int currentGroupCount = array.size(groupCenters)
+                bool candidateIsUpper = candidateZone.center >= close
+                if currentGroupCount > 0
+                    for groupIndex = 0 to currentGroupCount - 1
+                        float groupAnchor = array.get(groupAnchors, groupIndex)
+                        bool groupIsUpper = groupAnchor >= close
+                        float distance = math.abs(
+                             candidateZone.center - groupAnchor
+                        )
+                        // 不跨现价合并，避免上下方区间被压成一个无效中点
+                        if (
+                             candidateIsUpper == groupIsUpper and
+                             distance <= mergeDistance and
+                             distance < nearestDistance
+                        )
+                            targetGroup := groupIndex
+                            nearestDistance := distance
+
+                float candidateWeight = math.max(candidateScore, 1.0)
+                if targetGroup >= 0
+                    float oldCenter = array.get(groupCenters, targetGroup)
+                    float oldWeight = array.get(groupWeights, targetGroup)
+                    float newWeight = oldWeight + candidateWeight
+                    float newCenter = (
+                         oldCenter * oldWeight +
+                         candidateZone.center * candidateWeight
+                    ) / newWeight
+                    float oldScore = array.get(groupScores, targetGroup)
+                    float combinedScore = f_clamp(
+                         math.max(oldScore, candidateScore) +
+                         math.min(oldScore, candidateScore) * 0.15,
+                         0.0,
+                         100.0
+                    )
+                    array.set(groupCenters, targetGroup, newCenter)
+                    array.set(
+                         groupWidths,
+                         targetGroup,
+                         (
+                              array.get(groupWidths, targetGroup) * oldWeight +
+                              candidateZone.halfWidth * candidateWeight
+                         ) / newWeight
+                    )
+                    array.set(groupScores, targetGroup, combinedScore)
+                    array.set(groupWeights, targetGroup, newWeight)
+                    array.set(
+                         groupTimes,
+                         targetGroup,
+                         math.min(array.get(groupTimes, targetGroup), candidateZone.firstTime)
+                    )
+                else
+                    array.push(groupAnchors, candidateZone.center)
+                    array.push(groupCenters, candidateZone.center)
+                    array.push(groupWidths, candidateZone.halfWidth)
+                    array.push(groupScores, candidateScore)
+                    array.push(groupWeights, candidateWeight)
+                    array.push(groupTimes, candidateZone.firstTime)
+
+        // 上下方分别保留一半名额，不足时再由另一侧高分区间补齐
+        int groupCount = array.size(groupScores)
+        if groupCount > 0
+            array<int> sortedGroupIndices = array.sort_indices(groupScores, order.descending)
+            array<int> selectedGroups = array.new<int>()
+            int selectedLimit = math.min(requestedZones, groupCount)
+            int upperQuota = int(math.ceil(selectedLimit / 2.0))
+            int lowerQuota = selectedLimit - upperQuota
+            int upperCount = 0
+            int lowerCount = 0
+
+            for orderPosition = 0 to groupCount - 1
+                int groupIndex = array.get(sortedGroupIndices, orderPosition)
+                bool isUpper = array.get(groupCenters, groupIndex) >= close
+                if (
+                     isUpper and
+                     upperCount < upperQuota and
+                     array.size(selectedGroups) < selectedLimit
+                )
+                    array.push(selectedGroups, groupIndex)
+                    upperCount += 1
+                else if (
+                     not isUpper and
+                     lowerCount < lowerQuota and
+                     array.size(selectedGroups) < selectedLimit
+                )
+                    array.push(selectedGroups, groupIndex)
+                    lowerCount += 1
+
+            // 当某一侧候选不足时，继续按综合分数填满剩余名额
+            for orderPosition = 0 to groupCount - 1
+                int groupIndex = array.get(sortedGroupIndices, orderPosition)
+                if (
+                     array.size(selectedGroups) < selectedLimit and
+                     not array.includes(selectedGroups, groupIndex)
+                )
+                    array.push(selectedGroups, groupIndex)
+
+            int selectedCount = array.size(selectedGroups)
+            if selectedCount > 0
+                for selectionPosition = 0 to selectedCount - 1
+                    int groupIndex = array.get(selectedGroups, selectionPosition)
+                    float groupCenter = array.get(groupCenters, groupIndex)
+                    // 合并只消除重复价位，显示带宽仍由真实反弹事件宽度决定
+                    float displayPadding = currentAtr * 0.02
+                    float displayHalfWidth = math.min(
+                         array.get(groupWidths, groupIndex) + displayPadding,
+                         currentAtr * 0.35
+                    )
+                    array.push(outputCenters, groupCenter)
+                    array.push(outputWidths, displayHalfWidth)
+                    array.push(outputScores, array.get(groupScores, groupIndex))
+                    array.push(outputTimes, array.get(groupTimes, groupIndex))
+
+        result := ZoneSnapshot.new(
+             outputCenters,
+             outputWidths,
+             outputScores,
+             outputTimes,
+             currentAtr,
+             close,
+             processedDays,
+             observedVolume
+        )
+    result
+
+// 将输入映射为稳定的内部参数
+float widthFactor = widthInput == "窄" ? 0.18 : widthInput == "宽" ? 0.30 : 0.23
+bool useManualRound = roundModeInput == "手动"
+bool supportedTimeframe = (
+     timeframe.isintraday and
+     timeframe.in_seconds() >= 60 and
+     timeframe.in_seconds() <= 3600
+)
+
+string regularTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.regular)
+ZoneSnapshot snapshot = request.security(
+     regularTicker,
+     ANALYSIS_TIMEFRAME,
+     f_engine(
+          sensitivityInput,
+          widthFactor,
+          maxZonesInput,
+          minStrengthInput,
+          maxDistanceAtrInput,
+          displayMergeAtrInput,
+          useManualRound,
+          manualRoundStepInput,
+          touchWeightInput,
+          roleWeightInput,
+          volumeWeightInput,
+          gapWeightInput,
+          roundWeightInput
+     ),
+     gaps = barmerge.gaps_off,
+     lookahead = barmerge.lookahead_off,
+     calc_bars_count = CALC_BARS_COUNT
+)
+
+// 绘图对象只创建一次，之后使用设置函数复用
+var array<box> heatBoxes = array.new<box>()
+var array<line> centerLines = array.new<line>()
+var array<label> scoreLabels = array.new<label>()
+var table statusTable = table.new(position.top_right, 1, 1)
+
+if barstate.isfirst
+    for index = 0 to MAX_DRAW_ZONES - 1
+        box heatBox = box.new(
+             left = na,
+             top = na,
+             right = na,
+             bottom = na,
+             xloc = xloc.bar_time,
+             extend = extend.right,
+             border_color = na,
+             bgcolor = na
+        )
+        line centerLine = line.new(
+             x1 = na,
+             y1 = na,
+             x2 = na,
+             y2 = na,
+             xloc = xloc.bar_time,
+             extend = extend.right,
+             color = na,
+             style = line.style_dotted
+        )
+        label scoreLabel = label.new(
+             x = na,
+             y = na,
+             text = "",
+             xloc = xloc.bar_time,
+             style = label.style_label_left,
+             color = na,
+             textcolor = na,
+             size = size.tiny
+        )
+        array.push(heatBoxes, heatBox)
+        array.push(centerLines, centerLine)
+        array.push(scoreLabels, scoreLabel)
+
+f_hide_drawing(int index) =>
+    box heatBox = array.get(heatBoxes, index)
+    line centerLine = array.get(centerLines, index)
+    label scoreLabel = array.get(scoreLabels, index)
+    box.set_top(heatBox, na)
+    box.set_bottom(heatBox, na)
+    box.set_bgcolor(heatBox, na)
+    box.set_border_color(heatBox, na)
+    line.set_y1(centerLine, na)
+    line.set_y2(centerLine, na)
+    line.set_color(centerLine, na)
+    label.set_y(scoreLabel, na)
+    label.set_text(scoreLabel, "")
+    label.set_color(scoreLabel, na)
+    label.set_textcolor(scoreLabel, na)
+
+if barstate.islast
+    bool snapshotReady = not na(snapshot)
+    bool volumeReady = snapshotReady and snapshot.volumeAvailable
+    bool historyReady = snapshotReady and snapshot.processedDays >= MIN_HISTORY_DAYS
+    bool canDraw = supportedTimeframe and snapshotReady and volumeReady and historyReady
+
+    string statusText = ""
+    color statusColor = color.new(color.black, 100)
+    if not supportedTimeframe
+        statusText := "仅支持1分钟至1小时图表"
+        statusColor := color.new(color.orange, 15)
+    else if not snapshotReady
+        statusText := "等待1小时数据"
+        statusColor := color.new(color.orange, 15)
+    else if not volumeReady
+        statusText := "当前标的缺少成交量数据"
+        statusColor := color.new(color.orange, 15)
+    else if not historyReady
+        statusText := "历史数据不足，需要约120个交易日"
+        statusColor := color.new(color.orange, 15)
+    table.cell(
+         statusTable,
+         0,
+         0,
+         statusText,
+         text_color = color.white,
+         bgcolor = statusColor,
+         text_size = size.small
+    )
+
+    int visibleCount = canDraw ? array.size(snapshot.centers) : 0
+    int rightTime = chart.right_visible_bar_time
+    for index = 0 to MAX_DRAW_ZONES - 1
+        if index < visibleCount
+            float center = array.get(snapshot.centers, index)
+            float halfWidth = array.get(snapshot.halfWidths, index)
+            float strength = array.get(snapshot.scores, index)
+            int firstTime = array.get(snapshot.firstTimes, index)
+            // 以当前显示门槛为起点拉开明暗，高分区间获得同步视觉强调
+            float visualRange = math.max(100.0 - minStrengthInput, 1.0)
+            float visualIntensity = f_clamp(
+                 (strength - minStrengthInput) / visualRange,
+                 0.0,
+                 1.0
+            )
+            int fillTransparency = int(math.round(78.0 - visualIntensity * 34.0))
+            int borderTransparency = int(math.round(64.0 - visualIntensity * 46.0))
+            int lineTransparency = int(math.round(58.0 - visualIntensity * 48.0))
+            int labelTransparency = int(math.round(52.0 - visualIntensity * 44.0))
+            color fillColor = color.new(heatColorInput, fillTransparency)
+            color borderColor = color.new(heatColorInput, borderTransparency)
+            bool priceInside = snapshot.sourceClose >= center - halfWidth and snapshot.sourceClose <= center + halfWidth
+            bool highScoreEmphasis = visualIntensity >= 0.60
+
+            box heatBox = array.get(heatBoxes, index)
+            box.set_lefttop(heatBox, firstTime, center + halfWidth)
+            box.set_rightbottom(heatBox, time, center - halfWidth)
+            box.set_bgcolor(heatBox, fillColor)
+            box.set_border_color(heatBox, borderColor)
+            box.set_border_width(heatBox, priceInside or highScoreEmphasis ? 2 : 1)
+
+            line centerLine = array.get(centerLines, index)
+            line.set_xy1(centerLine, firstTime, center)
+            line.set_xy2(centerLine, time, center)
+            line.set_color(
+                 centerLine,
+                 showCenterInput ? color.new(heatColorInput, lineTransparency) : na
+            )
+            line.set_width(centerLine, priceInside or highScoreEmphasis ? 2 : 1)
+
+            label scoreLabel = array.get(scoreLabels, index)
+            label.set_x(scoreLabel, rightTime)
+            label.set_y(scoreLabel, center)
+            label.set_text(
+                 scoreLabel,
+                 showLabelsInput
+                      ? str.tostring(center, format.mintick) + " | " + str.tostring(math.round(strength))
+                      : ""
+            )
+            label.set_color(
+                 scoreLabel,
+                 showLabelsInput ? color.new(heatColorInput, labelTransparency) : na
+            )
+            label.set_textcolor(scoreLabel, showLabelsInput ? color.white : na)
+        else
+            f_hide_drawing(index)

@@ -11,14 +11,6 @@
 // 绝不适用于以本脚本所绘制的关键价位有效作为预设，
 // 然后提前在支撑位进行限价挂单抄底左侧交易的人。
 //
-// 本脚本适合基于关键价位进行回踩后右侧交易的交易者。
-// 绝不适用于以本脚本所绘制的关键价位有效作为预设，
-// 然后提前在支撑位进行限价挂单抄底左侧交易的人。
-//
-// 本脚本适合基于关键价位进行回踩后右侧交易的交易者。
-// 绝不适用于以本脚本所绘制的关键价位有效作为预设，
-// 然后提前在支撑位进行限价挂单抄底左侧交易的人。
-//
 // 脚本固定使用 1 小时常规交易时段 K 线，仅支持 1 小时及以下图表周期。
 // 它会回看价格反复停留、明显拒绝、放量和留下跳空缺口的位置，
 // 再按照各项权重计算，并把统计上相近的价位合并为关键价位区间。
@@ -71,6 +63,8 @@
 // - 放量形成的价位不够突出：提高“相对成交量”。
 // - 财报或消息面导致的缺口边界不够突出：提高“缺口”。
 // - 整数位太多或太少：降低或提高“整数共振”。
+// - 相邻关键区间太近、互相干扰：提高“最小显示间距（ATR）”。
+// - 右侧标签数字看不清：在“显示设置”里调大“标签字号”。
 //
 // 【三套参考配置适合什么标的】
 // 权重顺序：触及拒绝 / 多空转换 / 相对成交量 / 缺口 / 整数共振。
@@ -92,10 +86,11 @@
 //   滑点会让历史结果看起来比实际可交易性更好。
 //
 // 【数据仅供参考，不适用于实时交易，不构成投资建议】
-// 本脚本会读取当前尚未收盘的1小时K线，
-// 所以当前小时内的区间和强弱可能随着价格、影线及成交量变化。
-// 属于部分实时重绘；1小时K线收盘以后，
-// 由这根K线产生的指标才会确定下来。
+// v1.1.0 起，证据只取自已收盘的1小时K线，且每根K线只处理一次，
+// 因此价位与强度不会随盘中tick重绘，只在1小时K线收盘后更新；
+// 正在形成的1小时K线产生的事件会滞后到收盘后计入（最多约1小时）。
+// 图中的区间盒子和标签右端点会随图表时间前进，
+// “价格在区间内”的高亮则随现价实时变化。
 //
 // 中枢价位的高低区间还需要后面几根K线来辅助确认。
 // 确认以后，区间会从原枢轴发生的时间开始重绘，
@@ -172,6 +167,15 @@ float displayMergeAtrInput = input.float(
      tooltip = "显示前按1小时ATR合并相邻微区间。数值越大，关键区间越少且覆盖范围越宽。",
      group = GROUP_CORE
 )
+float minSpacingAtrInput = input.float(
+     1.25,
+     "最小显示间距（ATR）",
+     minval = 0.0,
+     maxval = 4.0,
+     step = 0.05,
+     tooltip = "已显示区间中心之间的最小距离。太近的区间只保留分数更高者，避免相近价位互相干扰；设为0可禁用。",
+     group = GROUP_CORE
+ )
 string widthInput = input.string(
      "标准",
      "区间宽度",
@@ -208,6 +212,13 @@ bool showLabelsInput = input.bool(
      tooltip = "右侧标签格式为：中心价 | 可交易性分数。",
      group = GROUP_DISPLAY
 )
+string labelSizeInput = input.string(
+     "中",
+     "标签字号",
+     options = ["小", "中", "大"],
+     tooltip = "右侧价格与强度标签的文字大小，看不太清时可以换更大的字号。",
+     group = GROUP_DISPLAY
+ )
 float maxDistanceAtrInput = input.float(
      12.0,
      "最大显示距离（ATR）",
@@ -451,6 +462,25 @@ f_remove_weakest(array<Zone> zones) =>
     if weakestIndex >= 0
         array.remove(zones, weakestIndex)
 
+f_group_spacing_ok(
+     array<float> centers,
+     array<int> selectedGroups,
+     int candidateIndex,
+     float minDistance
+) =>
+    bool spacingOk = true
+    int selectedCount = array.size(selectedGroups)
+    if selectedCount > 0
+        for index = 0 to selectedCount - 1
+            int selectedIndex = array.get(selectedGroups, index)
+            float distance = math.abs(
+                 array.get(centers, candidateIndex) - array.get(centers, selectedIndex)
+            )
+            if distance < minDistance
+                spacingOk := false
+                break
+    spacingOk
+
 f_add_candidate(
      array<Zone> zones,
      float price,
@@ -680,6 +710,7 @@ f_engine(
      float minimumStrength,
      float maxDistanceAtr,
      float displayMergeAtr,
+     float minSpacingAtr,
      bool useManualRound,
      float manualRoundStep,
      float touchWeight,
@@ -696,18 +727,7 @@ f_engine(
     var int processedBars = 0
     var int processedDays = 0
     var bool observedVolume = false
-
-    processedBars += 1
-    observedVolume := observedVolume or (not na(volume) and volume > 0.0)
-    bool newTradingDay = ta.change(time("D")) != 0
-    if newTradingDay
-        processedDays += 1
-
-    int pivotLegs = sensitivity == "保守" ? 5 : sensitivity == "密集" ? 3 : 4
-    int cooldownBars = sensitivity == "保守" ? 7 : sensitivity == "密集" ? 3 : 5
-    float gapAtrThreshold = sensitivity == "保守" ? 0.50 : sensitivity == "密集" ? 0.25 : 0.35
-    float relativeVolumeThreshold = sensitivity == "保守" ? 1.80 : sensitivity == "密集" ? 1.25 : 1.50
-    float wickThreshold = sensitivity == "保守" ? 0.45 : sensitivity == "密集" ? 0.25 : 0.35
+    var int lastProcessedBar = na
 
     float currentAtr = ta.atr(14)
     float volumeAverage = ta.sma(volume[1], 20)
@@ -717,116 +737,46 @@ f_engine(
          volumeAverage > 0.0
     ) ? volume / volumeAverage : 1.0
 
-    int existingCount = array.size(zones)
-    if existingCount > 0
-        for index = 0 to existingCount - 1
-            Zone zone = array.get(zones, index)
-            f_update_zone(zone, currentAtr, relativeVolume, cooldownBars, 3, newTradingDay)
+    // 只处理已收盘的1小时K线，且同一根K线只处理一次。
+    // 实时状态下引擎每个tick都会重跑；低周期图表上已收盘的1H K线
+    // 每小时还会被“已确认pass”重复执行约12次，必须用bar_index去重。
+    bool processBar = barstate.isconfirmed and (na(lastProcessedBar) or bar_index != lastProcessedBar)
+    if processBar
+        lastProcessedBar := bar_index
+        processedBars += 1
+        observedVolume := observedVolume or (not na(volume) and volume > 0.0)
+        bool newTradingDay = ta.change(time("D")) > 0
+        if newTradingDay
+            processedDays += 1
 
-    bool candidateAdded = false
+        int pivotLegs = sensitivity == "保守" ? 5 : sensitivity == "密集" ? 3 : 4
+        int cooldownBars = sensitivity == "保守" ? 7 : sensitivity == "密集" ? 3 : 5
+        float gapAtrThreshold = sensitivity == "保守" ? 0.50 : sensitivity == "密集" ? 0.25 : 0.35
+        float relativeVolumeThreshold = sensitivity == "保守" ? 1.80 : sensitivity == "密集" ? 1.25 : 1.50
+        float wickThreshold = sensitivity == "保守" ? 0.45 : sensitivity == "密集" ? 0.25 : 0.35
 
-    // 已确认枢轴会在右侧K线完成后加入，避免未来数据泄漏
-    float pivotHigh = ta.pivothigh(high, pivotLegs, pivotLegs)
-    float pivotLow = ta.pivotlow(low, pivotLegs, pivotLegs)
-    if not na(pivotHigh) and not na(currentAtr[pivotLegs]) and currentAtr[pivotLegs] > 0.0
-        float pivotAtr = currentAtr[pivotLegs]
-        float pivotRvol = relativeVolume[pivotLegs]
-        float eventWidth = f_event_half_width(pivotHigh, pivotAtr, widthFactor)
-        float volumeEvidence = f_clamp((pivotRvol - 1.0) * 0.60, 0.0, 1.20)
-        f_add_candidate(
-             zones,
-             pivotHigh,
-             eventWidth,
-             time[pivotLegs],
-             0.85,
-             volumeEvidence,
-             0.0,
-             false,
-             0,
-             float(na)
-        )
-        candidateAdded := true
-    if not na(pivotLow) and not na(currentAtr[pivotLegs]) and currentAtr[pivotLegs] > 0.0
-        float pivotAtr = currentAtr[pivotLegs]
-        float pivotRvol = relativeVolume[pivotLegs]
-        float eventWidth = f_event_half_width(pivotLow, pivotAtr, widthFactor)
-        float volumeEvidence = f_clamp((pivotRvol - 1.0) * 0.60, 0.0, 1.20)
-        f_add_candidate(
-             zones,
-             pivotLow,
-             eventWidth,
-             time[pivotLegs],
-             0.85,
-             volumeEvidence,
-             0.0,
-             false,
-             0,
-             float(na)
-        )
-        candidateAdded := true
+        int existingCount = array.size(zones)
+        if existingCount > 0
+            for index = 0 to existingCount - 1
+                Zone zone = array.get(zones, index)
+                f_update_zone(zone, currentAtr, relativeVolume, cooldownBars, 3, newTradingDay)
 
-    // 新交易日首根K线用于识别常规时段跳空
-    if newTradingDay and not na(close[1]) and not na(currentAtr)
-        float previousClose = close[1]
-        float gapSize = math.abs(open - previousClose)
-        float minimumGap = math.max(currentAtr * gapAtrThreshold, previousClose * 0.0030)
-        if gapSize >= minimumGap
-            int gapDirection = open > previousClose ? 1 : -1
-            bool filledOnOpeningBar = (
-                 gapDirection == 1 and low <= previousClose
-            ) or (
-                 gapDirection == -1 and high >= previousClose
-            )
-            float openingGapEvidence = filledOnOpeningBar ? 0.0 : 1.0
-            float lowerEdge = math.min(open, previousClose)
-            float upperEdge = math.max(open, previousClose)
-            float lowerWidth = f_event_half_width(lowerEdge, currentAtr, widthFactor)
-            float upperWidth = f_event_half_width(upperEdge, currentAtr, widthFactor)
+        bool candidateAdded = false
+
+        // 已确认枢轴会在右侧K线完成后加入，避免未来数据泄漏
+        float pivotHigh = ta.pivothigh(high, pivotLegs, pivotLegs)
+        float pivotLow = ta.pivotlow(low, pivotLegs, pivotLegs)
+        if not na(pivotHigh) and not na(currentAtr[pivotLegs]) and currentAtr[pivotLegs] > 0.0
+            float pivotAtr = currentAtr[pivotLegs]
+            float pivotRvol = relativeVolume[pivotLegs]
+            float eventWidth = f_event_half_width(pivotHigh, pivotAtr, widthFactor)
+            float volumeEvidence = f_clamp((pivotRvol - 1.0) * 0.60, 0.0, 1.20)
             f_add_candidate(
                  zones,
-                 lowerEdge,
-                 lowerWidth,
-                 time,
-                 0.20,
-                 0.0,
-                 openingGapEvidence,
-                 not filledOnOpeningBar,
-                 gapDirection,
-                 previousClose
-            )
-            f_add_candidate(
-                 zones,
-                 upperEdge,
-                 upperWidth,
-                 time,
-                 0.20,
-                 0.0,
-                 openingGapEvidence,
-                 not filledOnOpeningBar,
-                 gapDirection,
-                 previousClose
-            )
-            candidateAdded := true
-
-    // 放量拒绝K线补充没有形成标准枢轴的结构边缘
-    float candleRange = high - low
-    if (
-         candleRange > 0.0 and
-         not na(currentAtr) and
-         currentAtr > 0.0 and
-         relativeVolume >= relativeVolumeThreshold
-    )
-        float lowerWickRatio = (math.min(open, close) - low) / candleRange
-        float upperWickRatio = (high - math.max(open, close)) / candleRange
-        float volumeEvidence = f_clamp((relativeVolume - 1.0) * 0.75, 0.0, 1.20)
-        if lowerWickRatio >= wickThreshold
-            float eventWidth = f_event_half_width(low, currentAtr, widthFactor)
-            f_add_candidate(
-                 zones,
-                 low,
+                 pivotHigh,
                  eventWidth,
-                 time,
-                 0.65,
+                 time[pivotLegs],
+                 0.85,
                  volumeEvidence,
                  0.0,
                  false,
@@ -834,14 +784,17 @@ f_engine(
                  float(na)
             )
             candidateAdded := true
-        if upperWickRatio >= wickThreshold
-            float eventWidth = f_event_half_width(high, currentAtr, widthFactor)
+        if not na(pivotLow) and not na(currentAtr[pivotLegs]) and currentAtr[pivotLegs] > 0.0
+            float pivotAtr = currentAtr[pivotLegs]
+            float pivotRvol = relativeVolume[pivotLegs]
+            float eventWidth = f_event_half_width(pivotLow, pivotAtr, widthFactor)
+            float volumeEvidence = f_clamp((pivotRvol - 1.0) * 0.60, 0.0, 1.20)
             f_add_candidate(
                  zones,
-                 high,
+                 pivotLow,
                  eventWidth,
-                 time,
-                 0.65,
+                 time[pivotLegs],
+                 0.85,
                  volumeEvidence,
                  0.0,
                  false,
@@ -850,10 +803,95 @@ f_engine(
             )
             candidateAdded := true
 
-    if candidateAdded
-        f_merge_overlaps(zones)
-    if processedBars % 25 == 0
-        f_prune_stale(zones)
+        // 新交易日首根K线用于识别常规时段跳空
+        if newTradingDay and not na(close[1]) and not na(currentAtr)
+            float previousClose = close[1]
+            float gapSize = math.abs(open - previousClose)
+            float minimumGap = math.max(currentAtr * gapAtrThreshold, previousClose * 0.0030)
+            if gapSize >= minimumGap
+                int gapDirection = open > previousClose ? 1 : -1
+                bool filledOnOpeningBar = (
+                     gapDirection == 1 and low <= previousClose
+                ) or (
+                     gapDirection == -1 and high >= previousClose
+                )
+                float openingGapEvidence = filledOnOpeningBar ? 0.0 : 1.0
+                float lowerEdge = math.min(open, previousClose)
+                float upperEdge = math.max(open, previousClose)
+                float lowerWidth = f_event_half_width(lowerEdge, currentAtr, widthFactor)
+                float upperWidth = f_event_half_width(upperEdge, currentAtr, widthFactor)
+                f_add_candidate(
+                     zones,
+                     lowerEdge,
+                     lowerWidth,
+                     time,
+                     0.20,
+                     0.0,
+                     openingGapEvidence,
+                     not filledOnOpeningBar,
+                     gapDirection,
+                     previousClose
+                )
+                f_add_candidate(
+                     zones,
+                     upperEdge,
+                     upperWidth,
+                     time,
+                     0.20,
+                     0.0,
+                     openingGapEvidence,
+                     not filledOnOpeningBar,
+                     gapDirection,
+                     previousClose
+                )
+                candidateAdded := true
+
+        // 放量拒绝K线补充没有形成标准枢轴的结构边缘
+        float candleRange = high - low
+        if (
+             candleRange > 0.0 and
+             not na(currentAtr) and
+             currentAtr > 0.0 and
+             relativeVolume >= relativeVolumeThreshold
+        )
+            float lowerWickRatio = (math.min(open, close) - low) / candleRange
+            float upperWickRatio = (high - math.max(open, close)) / candleRange
+            float volumeEvidence = f_clamp((relativeVolume - 1.0) * 0.75, 0.0, 1.20)
+            if lowerWickRatio >= wickThreshold
+                float eventWidth = f_event_half_width(low, currentAtr, widthFactor)
+                f_add_candidate(
+                     zones,
+                     low,
+                     eventWidth,
+                     time,
+                     0.65,
+                     volumeEvidence,
+                     0.0,
+                     false,
+                     0,
+                     float(na)
+                )
+                candidateAdded := true
+            if upperWickRatio >= wickThreshold
+                float eventWidth = f_event_half_width(high, currentAtr, widthFactor)
+                f_add_candidate(
+                     zones,
+                     high,
+                     eventWidth,
+                     time,
+                     0.65,
+                     volumeEvidence,
+                     0.0,
+                     false,
+                     0,
+                     float(na)
+                )
+                candidateAdded := true
+
+        if candidateAdded
+            f_merge_overlaps(zones)
+        if processedBars % 25 == 0
+            f_prune_stale(zones)
 
     // 集合只在请求上下文的最后一根K线上返回，避免为每根历史K线复制数组
     ZoneSnapshot result = na
@@ -973,6 +1011,7 @@ f_engine(
         // 上下方分别保留一半名额，不足时再由另一侧高分区间补齐
         int groupCount = array.size(groupScores)
         if groupCount > 0
+            float spacingDistance = currentAtr * minSpacingAtr
             array<int> sortedGroupIndices = array.sort_indices(groupScores, order.descending)
             array<int> selectedGroups = array.new<int>()
             int selectedLimit = math.min(requestedZones, groupCount)
@@ -984,27 +1023,32 @@ f_engine(
             for orderPosition = 0 to groupCount - 1
                 int groupIndex = array.get(sortedGroupIndices, orderPosition)
                 bool isUpper = array.get(groupCenters, groupIndex) >= close
+                bool spacingOk = f_group_spacing_ok(groupCenters, selectedGroups, groupIndex, spacingDistance)
                 if (
                      isUpper and
                      upperCount < upperQuota and
-                     array.size(selectedGroups) < selectedLimit
+                     array.size(selectedGroups) < selectedLimit and
+                     spacingOk
                 )
                     array.push(selectedGroups, groupIndex)
                     upperCount += 1
                 else if (
                      not isUpper and
                      lowerCount < lowerQuota and
-                     array.size(selectedGroups) < selectedLimit
+                     array.size(selectedGroups) < selectedLimit and
+                     spacingOk
                 )
                     array.push(selectedGroups, groupIndex)
                     lowerCount += 1
 
-            // 当某一侧候选不足时，继续按综合分数填满剩余名额
+            // 某一侧候选不足或被间距过滤时，继续按综合分数填满剩余名额
             for orderPosition = 0 to groupCount - 1
                 int groupIndex = array.get(sortedGroupIndices, orderPosition)
+                bool spacingOk = f_group_spacing_ok(groupCenters, selectedGroups, groupIndex, spacingDistance)
                 if (
                      array.size(selectedGroups) < selectedLimit and
-                     not array.includes(selectedGroups, groupIndex)
+                     not array.includes(selectedGroups, groupIndex) and
+                     spacingOk
                 )
                     array.push(selectedGroups, groupIndex)
 
@@ -1056,6 +1100,7 @@ ZoneSnapshot snapshot = request.security(
           minStrengthInput,
           maxDistanceAtrInput,
           displayMergeAtrInput,
+          minSpacingAtrInput,
           useManualRound,
           manualRoundStepInput,
           touchWeightInput,
@@ -1105,7 +1150,7 @@ if barstate.isfirst
              style = label.style_label_left,
              color = na,
              textcolor = na,
-             size = size.tiny
+             size = labelSizeInput == "小" ? size.tiny : labelSizeInput == "大" ? size.normal : size.small
         )
         array.push(heatBoxes, heatBox)
         array.push(centerLines, centerLine)
@@ -1175,7 +1220,7 @@ if barstate.islast
             int fillTransparency = int(math.round(78.0 - visualIntensity * 34.0))
             int borderTransparency = int(math.round(64.0 - visualIntensity * 46.0))
             int lineTransparency = int(math.round(58.0 - visualIntensity * 48.0))
-            int labelTransparency = int(math.round(52.0 - visualIntensity * 44.0))
+            int labelTransparency = int(math.round(38.0 - visualIntensity * 30.0))
             color fillColor = color.new(heatColorInput, fillTransparency)
             color borderColor = color.new(heatColorInput, borderTransparency)
             bool priceInside = snapshot.sourceClose >= center - halfWidth and snapshot.sourceClose <= center + halfWidth

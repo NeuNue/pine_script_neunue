@@ -1,0 +1,406 @@
+//@version=6
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CVD Z-Score（累积成交量差值 Z 分数）— NeuNue 开发（v1 纯信号版）
+// ═══════════════════════════════════════════════════════════════════════════════
+// 用 Z 分数量化买卖压力（CVD）的强弱与偏离：> 0 买盘占优、< 0 卖盘占优、
+// |Z| > 2 进入极端区。识别吸筹、衰竭与量价背离；含波动率风格过滤与更高
+// 周期（HTF）确认。本版为纯信号版：只出信号与状态，不含任何交易指引。
+//
+// 【核心功能】
+// • CVD Z 分数（EMA/SMA/WMA 平滑）、效率分析（突破/低效）、现货吸筹、
+//   极限区预警、枢轴量价背离、波动率 + HTF 过滤、内置仪表盘、全套警报
+//
+// 【仪表盘名词解释】（4 列 × 6 行：状态点 / 方向 / 数值 / 指标名）
+// 1 Z 分数：▲ 偏多 ▼ 偏空；●红 = 极限超买，●绿 = 极限超卖
+// 2 效率：◆ 突破　◇ 低效（震荡）　— 均衡
+// 3 阶段：● 吸筹　! 衰竭　— 中性
+// 4 背离：▼ 顶背离　▲ 底背离　— 无
+// 5 过滤：✓ 可通过　✗ 已过滤（波动率或 HTF 任一不满足即抑制信号）
+//
+// 【使用方式】
+// 1. 粘贴到 Pine 编辑器 → “添加到图表”；建议 15 分钟或 1 小时周期；
+// 2. 适用：主流币、A 股、美股大盘股；低波动标的信号会被波动率过滤自动
+//    抑制（属预期行为，可在参数中关闭）；
+// 3. Z 分数上穿 0 线动量转多、下穿转空；进入极限区谨慎追单；
+// 4. 可开启警报（Alert）；详细参数、回测结论与迭代记录见文件夹内 README。
+//
+// 【注意事项】
+// 1. 信号默认在 K 线收盘确认后触发（可关闭）；Z 曲线会随 tick 重绘；
+// 2. CVD 为累计量，请只比较 Z 分数，不要比较原始数值；
+// 3. 背离在枢轴右半宽确认后出现，存在若干根 K 线延迟；吸筹 / 背离为
+//    观察性信号，请结合价格行为综合判断；
+// 4. 效率与波动率阈值按 15 分钟尺度校准，切换周期或标的请按需调整；
+// 5. 本脚本仅供学习研究，不构成任何投资建议。
+// ═══════════════════════════════════════════════════════════════════════════════
+
+indicator(title = 'CVD Z-Score（累积成交量差值 Z 分数）[NeuNue]', shorttitle = 'CVD-Z [NeuNue]', overlay = false, precision = 2)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 参数设置
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Z 分数设置 ────────────────────────────────────────────────────────────────
+lookbackPeriod = input.int(20, 'Z 分数回看周期', minval = 5, maxval = 100, group = 'Z 分数设置', tooltip = '计算 Z 分数均值与标准差所用的 K 线数量；越大越平滑、反应越慢')
+smoothLen = input.int(5, '平滑长度', minval = 1, maxval = 20, group = 'Z 分数设置', tooltip = '对原始 Z 分数做平滑的窗口长度')
+smoothType = input.string('EMA', '平滑方式', options = ['EMA', 'SMA', 'WMA'], group = 'Z 分数设置')
+deltaMethod = input.string('比例法', 'CVD 计算方法', options = ['比例法', '方向法', 'Elder 法'], group = 'Z 分数设置', tooltip = '比例法：按收盘价在整根 K 线高低范围内的相对位置分摊成交量，最接近真实买卖流；方向法：只看收阳 / 收阴，十字星记 0；Elder 法：经典累积 / 派发线（accdist）')
+
+// ── 信号设置 ──────────────────────────────────────────────────────────────────
+show_accumulation_signals = input(true, '显示现货吸筹信号', group = '信号设置', tooltip = 'CVD 持续上升而价格横盘时，在副图底部画蓝色圆点——疑似主力低位吸筹')
+show_climax_signals = input(true, '显示极限区（衰竭）预警', group = '信号设置', tooltip = 'Z 分数进入极限区时，在副图顶部 / 底部画菱形并高亮背景')
+show_divergence_signals = input(true, '显示量价背离信号', group = '信号设置', tooltip = '价格创新高而 CVD 未跟上（顶背离，红色 ×），或价格创新低而 CVD 不再走低（底背离，绿色 ×）')
+extremeHigh = input.float(2.0, '极限区上阈值（+）', minval = 1.0, maxval = 4.0, step = 0.1, group = '信号设置', tooltip = 'Z 分数高于该值进入超买 / 衰竭区')
+extremeLow = input.float(-2.0, '极限区下阈值（-）', minval = -4.0, maxval = -1.0, step = 0.1, group = '信号设置', tooltip = 'Z 分数低于该值进入超卖 / 衰竭区')
+breakoutEff = input.float(5.0, '突破效率阈值', minval = 0.5, maxval = 50.0, step = 0.5, group = '信号设置', tooltip = '效率高于该值视为放量突破（Effort 有效）')
+churnEff = input.float(0.5, '低效（震荡）阈值', minval = 0.05, maxval = 5.0, step = 0.05, group = '信号设置', tooltip = '效率低于该值视为高换手震荡（Effort 无效）')
+
+// ── 信号过滤设置 ──────────────────────────────────────────────────────────────
+useConfirmedBar = input.bool(true, '信号仅在 K 线收盘确认', group = '信号过滤', tooltip = '开启后，实时 K 线中的信号要等收盘才出现与触发警报，避免盘中重绘反复闪烁')
+signalCooldown = input.int(20, '同类信号冷却（根 K 线）', minval = 0, maxval = 100, group = '信号过滤', tooltip = '同一类信号触发后，N 根 K 线内不再重复触发，避免连续噪音；0 表示不限制')
+divPivotLeft = input.int(5, '背离枢轴左半宽', minval = 2, maxval = 30, group = '信号过滤', tooltip = '枢轴高 / 低点左侧需有多少根 K 线')
+divPivotRight = input.int(5, '背离枢轴右半宽', minval = 2, maxval = 30, group = '信号过滤', tooltip = '枢轴高 / 低点右侧需有多少根 K 线确认；越大信号越可靠、确认延迟也越大')
+divMinSwing = input.float(0.25, '背离最小摆动幅度（ATR）', minval = 0.0, maxval = 2.0, step = 0.05, group = '信号过滤', tooltip = '新枢轴相对前枢轴的摆动至少达到该倍 ATR 才视为有效新高 / 新低，过滤微小波动；0 表示不限制')
+// 以下两项为依据 A 股回测新增的风格 / 级别过滤器
+volFilter = input.bool(true, '波动率风格过滤', group = '信号过滤', tooltip = '回测显示背离信号在低波动慢牛（如银行）上失效、在高波动成长股上有效。开启后，ATR/收盘价 低于阈值的标的上不触发吸筹与背离信号')
+minVolPct = input.float(0.4, '最小波动率（ATR/收盘价 %）', minval = 0.0, maxval = 5.0, step = 0.05, group = '信号过滤', tooltip = '15 分钟尺度建议 0.4；1 小时可调 0.8；5 分钟可调 0.25。低于该波动的标的信号被过滤')
+htfFilter = input.bool(true, '更高周期（HTF）过滤', group = '信号过滤', tooltip = '回测显示 1 小时级别的方向确认质量最高。开启后，背离信号要求上一根已完成的更高周期 Z 分数不过热 / 不过冷，避免逆大级别追单')
+htfRes = input.string('60', '更高周期', options = ['15', '30', '60', '120', '240', 'D'], group = '信号过滤', tooltip = '取多大级别的 Z 分数做确认；15 分钟图建议 60，1 小时图建议 240 或 D')
+htfZLimit = input.float(0.5, 'HTF 过滤阈值（±）', minval = 0.0, maxval = 3.0, step = 0.1, group = '信号过滤', tooltip = '底背离要求 HTF Z ≤ +阈值（大级别不过热）；顶背离要求 HTF Z ≥ -阈值（大级别不过冷）')
+
+// ── 仪表盘设置 ────────────────────────────────────────────────────────────────
+show_dashboard = input(true, '显示仪表盘', group = '仪表盘')
+dashboard_position = input.string('中左', '仪表盘位置', options = ['左上', '右上', '中左', '中中', '中右', '左下', '右下'], group = '仪表盘')
+dashboard_size = input.string('小', '仪表盘字号', options = ['极小', '小', '中'], group = '仪表盘')
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CVD 计算
+// ═══════════════════════════════════════════════════════════════════════════════
+float barDelta = 0.0
+if deltaMethod == '比例法'
+    barDelta := high > low ? volume * (close - open) / (high - low) : 0.0
+else if deltaMethod == '方向法'
+    barDelta := close > open ? volume : close < open ? -volume : 0.0
+else
+    // Elder 法：累积 / 派发线，等价于 ta.accdist 的单根贡献
+    barDelta := high > low ? volume * ((close - low) - (high - close)) / (high - low) : 0.0
+
+var float cumulativeDelta = 0.0
+cumulativeDelta += barDelta
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 效率计算（Effort vs Result：费力与否）
+// ═══════════════════════════════════════════════════════════════════════════════
+priceChange = math.abs(ta.change(close, 5))
+cvdChange = math.abs(ta.change(cumulativeDelta, 5))
+// 加 0.0001 微小量防止除零；开头的 K 线 change 为 na 时效率为 na，比较时按 false（均衡）处理
+efficiency = priceChange / (cvdChange + 0.0001) * 10000
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Z 分数计算
+// ═══════════════════════════════════════════════════════════════════════════════
+cvdMean = ta.sma(cumulativeDelta, lookbackPeriod)
+cvdStd = ta.stdev(cumulativeDelta, lookbackPeriod)
+// 标准差为 0（历史不足或行情完全走平）时按 0 处理，避免除零产生 na
+rawZ = cvdStd > 0 ? (cumulativeDelta - cvdMean) / cvdStd : 0.0
+smoothedZ = smoothType == 'EMA' ? ta.ema(rawZ, smoothLen) : smoothType == 'SMA' ? ta.sma(rawZ, smoothLen) : ta.wma(rawZ, smoothLen)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 信号逻辑
+// ═══════════════════════════════════════════════════════════════════════════════
+// 状态（连续值，供仪表盘实时显示）：
+priceFlat = ta.range(close, 10) < ta.atr(14) * 1.5
+zRising = ta.rising(smoothedZ, 2)
+isAccumulating = smoothedZ > 0.5 and zRising and priceFlat
+isClimax = smoothedZ > extremeHigh or smoothedZ < extremeLow
+
+// 波动率风格过滤（依据回测：低波动标的上背离失效）
+atrVal = ta.atr(14)
+volPct = close > 0 ? atrVal / close * 100 : 0.0
+volOk = not volFilter or volPct >= minVolPct
+
+// 更高周期（HTF）过滤（依据回测：1 小时级别确认质量最高）
+// HTF 采用 Elder 累积 / 派发线的 Z 分数，自包含表达式，无跨周期累计状态问题
+f_htf_z() =>
+    acc = ta.accdist
+    stdH = ta.stdev(acc, lookbackPeriod)
+    rawH = stdH > 0 ? (acc - ta.sma(acc, lookbackPeriod)) / stdH : 0.0
+    ta.ema(rawH, smoothLen)
+htfZ = request.security(syminfo.tickerid, htfRes, f_htf_z(), lookahead = barmerge.lookahead_off)
+// 使用上一根已完成的 HTF 值，避免当前根未定型造成抖动
+htfZPrev = htfZ[1]
+htfOkBullish = not htfFilter or na(htfZPrev) or htfZPrev <= htfZLimit   // 底背离：大级别不过热
+htfOkBearish = not htfFilter or na(htfZPrev) or htfZPrev >= -htfZLimit  // 顶背离：大级别不过冷
+
+// 入场判定：只在条件成立的第一根 K 线触发，避免连续重复
+accEntry = isAccumulating and not isAccumulating[1]
+climaxObEntry = smoothedZ > extremeHigh and not (smoothedZ[1] > extremeHigh)
+climaxOsEntry = smoothedZ < extremeLow and not (smoothedZ[1] < extremeLow)
+
+// 冷却计数器：信号触发后 N 根 K 线内抑制同类信号
+var int accCooldown = 0
+var int climaxCooldown = 0
+var int divCooldown = 0
+if accCooldown > 0
+    accCooldown := accCooldown - 1
+if climaxCooldown > 0
+    climaxCooldown := climaxCooldown - 1
+if divCooldown > 0
+    divCooldown := divCooldown - 1
+
+accumulationSignal = accEntry and accCooldown == 0 and volOk
+if accumulationSignal
+    accCooldown := signalCooldown
+
+climaxObSignal = climaxObEntry and climaxCooldown == 0
+climaxOsSignal = climaxOsEntry and climaxCooldown == 0
+if climaxObSignal or climaxOsSignal
+    climaxCooldown := signalCooldown
+
+// 量价背离：基于枢轴高 / 低点，仅在右半宽确认后评估（结构信号，天然稀疏）
+pivotHighVal = ta.pivothigh(high, divPivotLeft, divPivotRight)
+pivotLowVal = ta.pivotlow(low, divPivotLeft, divPivotRight)
+
+var float prevPivotHigh = na
+var float prevPivotHighCvd = na
+var float prevPivotLow = na
+var float prevPivotLowCvd = na
+
+bearishDivRaw = false
+bullishDivRaw = false
+
+if not na(pivotHighVal)
+    if not na(prevPivotHigh) and not na(prevPivotHighCvd)
+        swing = atrVal > 0 ? (pivotHighVal - prevPivotHigh) / atrVal : 0.0
+        if pivotHighVal > prevPivotHigh and cumulativeDelta[divPivotRight] < prevPivotHighCvd and swing >= divMinSwing and volOk and htfOkBearish
+            bearishDivRaw := true
+    prevPivotHigh := pivotHighVal
+    prevPivotHighCvd := cumulativeDelta[divPivotRight]
+
+if not na(pivotLowVal)
+    if not na(prevPivotLow) and not na(prevPivotLowCvd)
+        swing = atrVal > 0 ? (prevPivotLow - pivotLowVal) / atrVal : 0.0
+        if pivotLowVal < prevPivotLow and cumulativeDelta[divPivotRight] > prevPivotLowCvd and swing >= divMinSwing and volOk and htfOkBullish
+            bullishDivRaw := true
+    prevPivotLow := pivotLowVal
+    prevPivotLowCvd := cumulativeDelta[divPivotRight]
+
+bearishDiv = bearishDivRaw and divCooldown == 0
+bullishDiv = bullishDivRaw and divCooldown == 0
+if bearishDiv or bullishDiv
+    divCooldown := signalCooldown
+
+// 实盘输出：默认仅在 K 线收盘后确认信号，减少盘中重绘
+confirmedBar = not useConfirmedBar or barstate.isconfirmed
+accSignal = accumulationSignal and confirmedBar
+climaxOb = climaxObSignal and confirmedBar
+climaxOs = climaxOsSignal and confirmedBar
+bearDiv = bearishDiv and confirmedBar
+bullDiv = bullishDiv and confirmedBar
+
+// 过滤器综合状态（供仪表盘第 5 行显示）
+filtPass = volOk and htfOkBullish and htfOkBearish
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 颜色
+// ═══════════════════════════════════════════════════════════════════════════════
+color_bear = color.rgb(255, 20, 255)
+color_bull = color.rgb(20, 165, 255)
+color_extreme_overbought = color.rgb(255, 0, 0)
+color_extreme_oversold = color.rgb(0, 255, 0)
+color_accumulation = color.rgb(0, 120, 255)
+color_churn = color.rgb(255, 165, 0)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 绘图
+// ═══════════════════════════════════════════════════════════════════════════════
+// Z 分数分区线
+hline(0, '零轴', color = color.new(color.gray, 50), linestyle = hline.style_solid)
+ob_zone = hline(extremeHigh, '极限高位', color = color.new(color_extreme_overbought, 70), linestyle = hline.style_dashed)
+os_zone = hline(extremeLow, '极限低位', color = color.new(color_extreme_oversold, 70), linestyle = hline.style_dashed)
+upper_band = hline(1.0, '上轨', color = color.new(color.gray, 80), linestyle = hline.style_dotted)
+lower_band = hline(-1.0, '下轨', color = color.new(color.gray, 80), linestyle = hline.style_dotted)
+
+// 中性区与极限区背景填充
+fill(upper_band, lower_band, color = color.new(color.gray, 93), title = '中性区')
+fill(ob_zone, upper_band, color = color.new(color_extreme_overbought, 93), title = '超买区')
+fill(os_zone, lower_band, color = color.new(color_extreme_oversold, 93), title = '超卖区')
+
+// Z 分数线条颜色
+zColor = if smoothedZ > extremeHigh
+    color_extreme_overbought
+else if smoothedZ > 0
+    color_bull
+else if smoothedZ < extremeLow
+    color_extreme_oversold
+else
+    color_bear
+
+// 主 Z 分数曲线
+z_plot = plot(smoothedZ, '平滑 Z 分数', color = zColor, linewidth = 2)
+middle_plot = plot(0, color = color.new(color.gray, 0))
+
+// 零轴渐变填充（注意：fill 只支持 color 参数，不支持 top_color / bottom_color；
+// 这里按多空方向切换填充颜色，修正原版无法编译的问题）
+fill(middle_plot, z_plot, color = smoothedZ > 0 ? color.new(color_bull, 50) : na, title = '多头填充')
+fill(z_plot, middle_plot, color = smoothedZ < 0 ? color.new(color_bear, 50) : na, title = '空头填充')
+
+// 现货吸筹信号：蓝色圆点（副图底部）——仅入场第一根 + 冷却 + 收盘确认
+plotshape(show_accumulation_signals and accSignal, '现货吸筹', shape.circle, location.bottom, color_accumulation, size = size.tiny)
+
+// 极限区（衰竭）信号：进入极限区的第一根 K 线画菱形（带冷却 + 收盘确认）
+plotshape(show_climax_signals and climaxOb, '极限超买', shape.diamond, location.top, color_extreme_overbought, size = size.tiny)
+plotshape(show_climax_signals and climaxOs, '极限超卖', shape.diamond, location.bottom, color_extreme_oversold, size = size.tiny)
+
+// 量价背离信号：红色 ×（顶背离）/ 绿色 ×（底背离），枢轴确认 + 冷却 + 收盘确认
+plotshape(show_divergence_signals and bearDiv, '顶背离', shape.xcross, location.top, color_extreme_overbought, size = size.tiny)
+plotshape(show_divergence_signals and bullDiv, '底背离', shape.xcross, location.bottom, color_extreme_oversold, size = size.tiny)
+
+// 极限区背景闪烁
+bgcolor(show_climax_signals and smoothedZ > extremeHigh ? color.new(color_extreme_overbought, 90) : na, title = '极限超买背景')
+bgcolor(show_climax_signals and smoothedZ < extremeLow ? color.new(color_extreme_oversold, 90) : na, title = '极限超卖背景')
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 警报
+// ═══════════════════════════════════════════════════════════════════════════════
+alertcondition(accSignal, title = '● 现货吸筹信号', message = 'CVD Z 分数：CVD 持续上升而价格横盘，疑似主力低位吸筹，仅供参考。')
+alertcondition(climaxOb, title = '⚠ 极限超买（入场）Z 分数', message = 'CVD Z 分数进入极限超买区，行情可能过热 / 衰竭，注意反转风险。')
+alertcondition(climaxOs, title = '⚠ 极限超卖（入场）Z 分数', message = 'CVD Z 分数进入极限超卖区，行情可能超卖 / 衰竭，注意反弹机会。')
+alertcondition(ta.crossover(smoothedZ, 0), title = '↑ Z 分数上穿零轴', message = 'CVD Z 分数上穿零轴，动量转多。')
+alertcondition(ta.crossunder(smoothedZ, 0), title = '↓ Z 分数下穿零轴', message = 'CVD Z 分数下穿零轴，动量转空。')
+alertcondition(bearDiv, title = '⚠ 顶背离（枢轴新高、CVD 未跟上）', message = '枢轴高点创新高而 CVD 未跟上，出现顶背离，注意回落风险。')
+alertcondition(bullDiv, title = '⚠ 底背离（枢轴新低、CVD 未走低）', message = '枢轴低点创新低而 CVD 不再走低，出现底背离，注意反弹机会。')
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 仪表盘
+// ═══════════════════════════════════════════════════════════════════════════════
+table_position_val = dashboard_position == '左上' ? position.top_left : dashboard_position == '右上' ? position.top_right : dashboard_position == '中左' ? position.middle_left : dashboard_position == '中中' ? position.middle_center : dashboard_position == '中右' ? position.middle_right : dashboard_position == '左下' ? position.bottom_left : position.bottom_right
+
+table_size_1 = size.small
+table_size_2 = size.tiny
+
+if dashboard_size == '极小'
+    table_size_1 := size.tiny
+    table_size_2 := size.tiny
+else if dashboard_size == '小'
+    table_size_1 := size.normal
+    table_size_2 := size.small
+else
+    table_size_1 := size.large
+    table_size_2 := size.normal
+
+// 表格配色
+table_bg_color = color.rgb(20, 20, 20)
+table_bg_color_2 = color.rgb(50, 50, 50)
+table_bg_color_3 = color.rgb(35, 35, 35)
+table_background_color = color.rgb(14, 16, 21)
+
+table_bull_text_color = color.rgb(0, 0, 0)
+table_bear_text_color = color.rgb(255, 255, 255)
+table_bull_color = color.rgb(0, 255, 0)
+table_bear_color = color.rgb(255, 0, 0)
+
+// 辅助函数：方向箭头单元格
+make_trend_cell(tbl, col, row, is_bull, is_extreme_ob, is_extreme_os) =>
+    trend_icon = is_bull ? '▲' : '▼'
+    icon_bg_color = is_bull ? table_bull_color : table_bear_color
+    icon_text_color = is_bull ? table_bull_text_color : table_bear_text_color
+    if is_extreme_ob
+        icon_bg_color := color.rgb(255, 0, 0)
+        icon_text_color := color.rgb(255, 255, 255)
+    else if is_extreme_os
+        icon_bg_color := color.rgb(0, 255, 0)
+        icon_text_color := color.rgb(0, 0, 0)
+    table.cell(tbl, col, row, trend_icon, text_color = icon_text_color, text_size = table_size_1, bgcolor = icon_bg_color, text_halign = text.align_center, text_valign = text.align_center)
+
+// 辅助函数：数值单元格
+make_value_cell(tbl, col, row, value, is_bull, is_extreme_ob, is_extreme_os) =>
+    val_text = str.tostring(value, '#.##')
+    cell_color = is_bull ? table_bull_color : table_bear_color
+    text_color = is_bull ? table_bull_text_color : table_bear_text_color
+    if is_extreme_ob
+        cell_color := color.rgb(255, 0, 0)
+        text_color := color.rgb(255, 255, 255)
+    else if is_extreme_os
+        cell_color := color.rgb(0, 255, 0)
+        text_color := color.rgb(0, 0, 0)
+    table.cell(tbl, col, row, val_text, bgcolor = cell_color, text_color = text_color, text_halign = text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace, text_size = table_size_2)
+
+// 辅助函数：极限区状态点
+make_extreme_dot(tbl, col, row, is_extreme_ob, is_extreme_os) =>
+    dot_text = ''
+    dot_color = table_bg_color
+    if is_extreme_ob
+        dot_text := '●'
+        dot_color := color.rgb(255, 0, 0)
+    else if is_extreme_os
+        dot_text := '●'
+        dot_color := color.rgb(0, 255, 0)
+    table.cell(tbl, col, row, dot_text, bgcolor = table_bg_color, text_color = dot_color, text_halign = text.align_center, text_valign = text.align_center, text_size = table_size_1)
+
+// 创建仪表盘表格（4 列 × 6 行：状态点 / 方向 / 数值 / 指标名）
+var dashboard = table.new(table_position_val, 4, 6, bgcolor = table_background_color, border_width = 0, frame_width = 3)
+
+if show_dashboard
+    // 表头
+    table.cell(dashboard, 0, 0, '●', text_color = color.rgb(255, 255, 255, 50), text_size = table_size_2, bgcolor = table_bg_color, text_font_family = font.family_default, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 1, 0, '↕', text_color = color.rgb(255, 255, 255, 50), text_size = table_size_2, bgcolor = table_bg_color, text_font_family = font.family_default, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 2, 0, '值', text_color = color.rgb(255, 255, 255, 50), text_size = table_size_2, bgcolor = table_bg_color, text_font_family = font.family_default, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 3, 0, '指标', text_color = color.rgb(255, 255, 255, 50), text_size = table_size_2, bgcolor = table_bg_color, text_font_family = font.family_default, text_halign = text.align_center, text_valign = text.align_center)
+
+    // 第 1 行：CVD Z 分数
+    z_bull = smoothedZ > 0
+    z_extreme_ob = smoothedZ > extremeHigh
+    z_extreme_os = smoothedZ < extremeLow
+    make_extreme_dot(dashboard, 0, 1, z_extreme_ob, z_extreme_os)
+    make_trend_cell(dashboard, 1, 1, z_bull, z_extreme_ob, z_extreme_os)
+    make_value_cell(dashboard, 2, 1, smoothedZ, z_bull, z_extreme_ob, z_extreme_os)
+    table.cell(dashboard, 3, 1, 'Z 分数', text_halign = text.align_center, text_color = color.rgb(255, 255, 255), text_size = table_size_2, text_font_family = font.family_monospace, bgcolor = table_bg_color_2, text_valign = text.align_center)
+
+    // 第 2 行：效率（费力与否）
+    eff_is_breakout = efficiency > breakoutEff
+    eff_is_churn = efficiency < churnEff
+    eff_icon = eff_is_breakout ? '◆' : eff_is_churn ? '◇' : '—'
+    eff_bg = eff_is_breakout ? color.rgb(0, 180, 220) : eff_is_churn ? color_churn : table_bg_color_3
+    eff_text_color = eff_is_breakout ? color.rgb(0, 0, 0) : eff_is_churn ? color.rgb(0, 0, 0) : color.rgb(255, 255, 255, 50)
+    eff_label = eff_is_breakout ? '突破' : eff_is_churn ? '低效' : '均衡'
+
+    table.cell(dashboard, 0, 2, '', bgcolor = table_bg_color, text_size = table_size_1, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 1, 2, eff_icon, text_color = eff_text_color, text_size = table_size_1, bgcolor = eff_bg, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 2, 2, eff_label, bgcolor = eff_bg, text_color = eff_text_color, text_halign = text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace, text_size = table_size_2)
+    table.cell(dashboard, 3, 2, '效率', text_halign = text.align_center, text_color = color.rgb(255, 255, 255), text_size = table_size_2, text_font_family = font.family_monospace, bgcolor = table_bg_color_2, text_valign = text.align_center)
+
+    // 第 3 行：阶段（信号）
+    sig_is_accum = isAccumulating
+    sig_is_climax = isClimax
+    sig_icon = sig_is_accum ? '●' : sig_is_climax ? '!' : '—'
+    sig_bg = sig_is_accum ? color_accumulation : sig_is_climax ? color.rgb(255, 165, 0) : table_bg_color_3
+    sig_text_color = sig_is_accum ? color.rgb(255, 255, 255) : sig_is_climax ? color.rgb(0, 0, 0) : color.rgb(255, 255, 255, 50)
+    sig_label = sig_is_accum ? '吸筹' : sig_is_climax ? '衰竭' : '中性'
+
+    table.cell(dashboard, 0, 3, '', bgcolor = table_bg_color, text_size = table_size_1, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 1, 3, sig_icon, text_color = sig_text_color, text_size = table_size_1, bgcolor = sig_bg, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 2, 3, sig_label, bgcolor = sig_bg, text_color = sig_text_color, text_halign = text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace, text_size = table_size_2)
+    table.cell(dashboard, 3, 3, '阶段', text_halign = text.align_center, text_color = color.rgb(255, 255, 255), text_size = table_size_2, text_font_family = font.family_monospace, bgcolor = table_bg_color_2, text_valign = text.align_center)
+
+    // 第 4 行：量价背离（枢轴确认信号）
+    div_icon = bearDiv ? '▼' : bullDiv ? '▲' : '—'
+    div_bg = bearDiv ? color.rgb(255, 0, 0) : bullDiv ? color.rgb(0, 255, 0) : table_bg_color_3
+    div_text_color = bearDiv ? color.rgb(255, 255, 255) : bullDiv ? color.rgb(0, 0, 0) : color.rgb(255, 255, 255, 50)
+    div_label = bearDiv ? '顶背离' : bullDiv ? '底背离' : '无背离'
+
+    table.cell(dashboard, 0, 4, '', bgcolor = table_bg_color, text_size = table_size_1, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 1, 4, div_icon, text_color = div_text_color, text_size = table_size_1, bgcolor = div_bg, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 2, 4, div_label, bgcolor = div_bg, text_color = div_text_color, text_halign = text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace, text_size = table_size_2)
+    table.cell(dashboard, 3, 4, '背离', text_halign = text.align_center, text_color = color.rgb(255, 255, 255), text_size = table_size_2, text_font_family = font.family_monospace, bgcolor = table_bg_color_2, text_valign = text.align_center)
+
+    // 第 5 行：过滤器状态（波动率风格过滤 + 更高周期过滤）
+    filt_icon = filtPass ? '✓' : '✗'
+    filt_bg = filtPass ? color.rgb(0, 180, 120) : color.rgb(220, 60, 60)
+    filt_text_color = color.rgb(255, 255, 255)
+    filt_label = filtPass ? '可通过' : '已过滤'
+
+    table.cell(dashboard, 0, 5, '', bgcolor = table_bg_color, text_size = table_size_1, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 1, 5, filt_icon, text_color = filt_text_color, text_size = table_size_1, bgcolor = filt_bg, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(dashboard, 2, 5, filt_label, bgcolor = filt_bg, text_color = filt_text_color, text_halign = text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace, text_size = table_size_2)
+    table.cell(dashboard, 3, 5, '过滤', text_halign = text.align_center, text_color = color.rgb(255, 255, 255), text_size = table_size_2, text_font_family = font.family_monospace, bgcolor = table_bg_color_2, text_valign = text.align_center)

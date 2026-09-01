@@ -1,20 +1,120 @@
 //@version=6
 
 // =============================================================================
-// 1小时关键价位热力图（1H Key Level Heatmap）
+// 加密货币关键价位热力图 README（基于 Key Level Finder 的 24/7 适配版）
 // =============================================================================
-// 作者: NeuNue
-// 协议: MIT License
-// 仓库: https://github.com/NeuNue/1H-Key-Level-Heatmap-NeuNue-
+// 本脚本由原始《1小时关键价位热力图》（NeuNue 开发，基于 QQQ 校准）复制并
+// 针对 7×24 小时交易的加密货币市场改编。目标相同：帮助观察 BTC、ETH、
+// SOL 及高流动性 USDT 本位合约/现货的支撑、阻力，以及价格反复争夺、
+// 容易触发杠杆清算的区域。
 //
-// 详细说明、参数解释、配置参考与风险声明请见 GitHub README。
-// 本脚本固定使用 1 小时常规交易时段 K 线，仅支持 1 小时及以下图表周期。
-// 不构成投资建议。
+// 本脚本适合基于关键价位进行回踩后右侧交易的交易者。
+// 绝不适用于以本脚本所绘制的关键价位有效作为预设，
+// 然后提前在支撑位进行限价挂单抄底左侧交易的人。
+//
+// 脚本固定使用 1 小时 K 线（加密货币全天交易，1H 即 24 根/日），
+// 仅支持 1 小时及以下图表周期。它会回看价格反复停留、明显拒绝、
+// 放量和清算式跳空的位置，再按各项权重计算，
+// 并把统计上相近的价位合并为关键价位区间。
+//
+// 该版本适配 BTC、ETH、SOL 等主流币，以及 BNB、XRP 等成交活跃、
+// 深度足够的 USDT 合约/现货。对低流动性山寨币、新币或缺乏成交量数据的
+// 标的适配度较低，直接套用时结果可能失真。建议按需要调整权重分配。
+//
+// 【权重值分别表示什么？】
+// 1. 触及与拒绝（默认50）
+//    可以理解为“这个位置以前到底有没有被资金防守过”。
+//    价格多次到这里就反弹或回落，或留下清算插针式的长影线，
+//    这一项计算的分值就会增加。
+//    如果图上总出现只反应过一次的杂乱价位，
+//    也可以提高这一项，或者同时提高“最低强度”。
+//
+// 2. 多空转换（默认25）
+//    关注“原来的阻力突破后变成支撑”以及“原来的支撑跌破后变成阻力”。
+//    如果你主要做突破、回踩和趋势延续，可以提高这一项；
+//    如果标的长期横盘，很少走出有效突破，可以适当降低。
+//
+// 3. 相对成交量（默认25）
+//    关注关键位置形成时，参与交易的人是不是明显比平时多。放量意味着更多
+//    资金在这里达成过共识，也是杠杆清算集中爆发的重要信号。成交量稳定、
+//    深度好的主流币可以保持默认值；如果插针、瀑布频繁制造一次性放量，
+//    可以适当降低，避免单根K线对结果影响过大。
+//
+// 4. 跳空缺口（默认5，已弱化）
+//    加密货币全天交易没有传统“隔夜缺口”，这里改为识别相邻1小时K线之间
+//    无重叠的显著跳空（常见于杠杆清算瀑布、插针或突发消息）。
+//    其上下边界有时会成为后续支撑、阻力或回补目标。
+//    币价极速波动、清算频繁时可适当提高；
+//    走势连续、跳空稀少的币可保持较低甚至设为0。
+//
+// 5. 整数共振（默认10）
+//    关注 100000、65000、100、1.00 这类容易被交易者记住和挂单的整数位置，
+//    也会自动适配 BTC 的大整数、ETH 的百位整数以及低价山寨币的小数位。
+//    如果标的经常围绕这些心理价位反应，可以提高；
+//    如果区间过度集中在整数位却没有明显历史反应，就应该降低。
+//
+// 【怎么调整比较稳妥】
+// - 权重并非最佳值。对于同一标的不同的行情，最佳的权重值也不一样。
+// - 这些数字表示相对权重，不要求加起来等于100。全部同时乘以两倍不会
+//   改变结果；把某项设为0，才表示完全不考虑这一类证据。
+// - 建议从默认值开始，每次只改一项，每次调整5—10点。
+//   先观察误判或漏判属于哪一类，再改对应权重，
+//   不要为了贴合一段历史一次性把所有参数都改掉。
+// - 杂乱弱位太多：提高“触及与拒绝”或“最低强度”。
+// - 突破回踩位经常漏掉：提高“多空转换”。
+// - 放量形成的价位不够突出：提高“相对成交量”。
+// - 清算瀑布或突发消息导致的跳空边界不够突出：提高“缺口”。
+// - 整数位太多或太少：降低或提高“整数共振”。
+// - 相邻关键区间太近、互相干扰：提高“最小显示间距（ATR）”。
+// - 右侧标签数字看不清：在“显示设置”里调大“标签字号”。
+//
+// 【三套参考配置适合什么标的】
+// 权重顺序：触及拒绝 / 多空转换 / 相对成交量 / 缺口 / 整数共振。
+//
+// - 清算均衡型（默认）：50 / 25 / 25 / 5 / 10
+//   针对加密货币高波动与杠杆清算特性调教的默认配置。
+//   更强调反复触及/拒绝（清算插针）与放量确认，弱化缺口。
+//   适合 BTC、ETH、SOL 等主流币的日内观察与波段参考。
+//
+// - 深度支撑阻力型：55 / 30 / 15 / 5 / 5
+//   更相信反复触及和突破回踩，进一步弱化一次性放量与跳空。
+//   适合走势较连续、历史价位反复有效的主流币（如 BTC/ETH 大周期），
+//   以及偏区间或均值回归的交易方式。
+//
+// - 清算与瀑布型：40 / 20 / 35 / 10 / 5
+//   更重视放量与清算式跳空。适合插针频繁、杠杆清算剧烈、消息驱动强的
+//   热门币。不建议用于成交稀疏的低流动性山寨币，因为异常成交量和滑点
+//   会让历史结果看起来比实际可交易性更好。
+//
+// 【数据仅供参考，不适用于实时交易，不构成投资建议】
+// v1.1.0 起，证据只取自已收盘的1小时K线，且每根K线只处理一次，
+// 因此价位与强度不会随盘中tick重绘，只在1小时K线收盘后更新；
+// 正在形成的1小时K线产生的事件会滞后到收盘后计入（最多约1小时）。
+// 图中的区间盒子和标签右端点会随图表时间前进，
+// “价格在区间内”的高亮则随现价实时变化。
+//
+// 加密货币 7×24 小时交易，1H K 线无收盘间断，约 24 根/日。
+// 时间衰减仍按 UTC 日历日滚动，因此旧区间淡出速度与标的一致。
+//
+// 中枢价位的高低区间还需要后面几根K线来辅助确认。
+// 确认以后，区间会从原枢轴发生的时间开始重绘，
+// 因此回看图表时可能看起来像是它当时就已经出现，
+// 实际上实时交易中要等确认K线结束后才能知道。
+// 脚本没有使用lookahead_on读取未来数据，
+// 但仍不建议当作历史进场信号进行回测。
+//
+// 实时交易时，更适合把它当作支撑阻力地图：
+// 以已经收盘并确认的1小时区间为主，
+// 再结合5min K线所展示的价格行为决定是否进场。
+// 不要仅凭当前小时内刚出现或分数正在变化的区间自动下单。
+// 杠杆清算会造成价格瞬间扫穿价位后反向，务必结合仓位与止损管理；
+// 图中区间代表“反复争夺的价格区域”，不是精确的止损/挂单位置。
+// 它既能辅助实时观察，也能用于回溯研究，但不是量化交易工具。
 // =============================================================================
 
 indicator(
-     "1小时关键价位热力图",
-     shorttitle = "1H 关键区",
+     "加密货币1小时关键价位热力图",
+     shorttitle = "加密关键区",
      overlay = true,
      max_boxes_count = 12,
      max_lines_count = 12,
@@ -24,16 +124,16 @@ indicator(
 // 固定参数
 const string ANALYSIS_TIMEFRAME = "60"
 const int MAX_DRAW_ZONES = 12
-const int MAX_ENGINE_ZONES = 120
-const int CALC_BARS_COUNT = 2200
-const int MIN_HISTORY_DAYS = 120
-// 时间衰减：短期约 13.5 个交易日半衰期，长期约 46 个交易日半衰期。
-// 这样 5 月份形成、之后未被重新验证的旧区间会明显淡出。
-const float SHORT_DAILY_DECAY = 0.9500
-const float LONG_DAILY_DECAY = 0.9850
+const int MAX_ENGINE_ZONES = 150
+const int CALC_BARS_COUNT = 4600
+const int MIN_HISTORY_DAYS = 90
+// 时间衰减：加密货币全天交易、波动更大，未重新验证的旧区间淡出应更快。
+// 短期约 10.5 个日历日半衰期，长期约 34 个日历日半衰期。
+const float SHORT_DAILY_DECAY = 0.9360
+const float LONG_DAILY_DECAY = 0.9800
 const float STRUCTURE_RANK_WEIGHT = 0.75
 const float DISTANCE_RANK_WEIGHT = 0.25
-const float DISTANCE_DECAY_ATR = 6.0
+const float DISTANCE_DECAY_ATR = 8.0
 const float STRUCTURE_FLOOR_RATIO = 0.50
 
 // 输入分组
@@ -67,21 +167,21 @@ float minStrengthInput = input.float(
      group = GROUP_CORE
 )
 float displayMergeAtrInput = input.float(
-     0.75,
+     0.85,
      "邻近区间合并距离（ATR）",
      minval = 0.25,
      maxval = 1.50,
      step = 0.05,
-     tooltip = "显示前按1小时ATR合并相邻微区间。数值越大，关键区间越少且覆盖范围越宽。",
+     tooltip = "显示前按1小时ATR合并相邻微区间。加密货币波动大，可适当调大；数值越大，关键区间越少且覆盖范围越宽。",
      group = GROUP_CORE
 )
 float minSpacingAtrInput = input.float(
-     2.00,
+     2.50,
      "最小显示间距（ATR）",
      minval = 0.0,
      maxval = 4.0,
      step = 0.05,
-     tooltip = "已显示区间中心之间的最小距离。太近的区间只保留分数更高者，避免相近价位互相干扰；QQQ 等指数建议 1.75～2.50；设为0可禁用。",
+     tooltip = "已显示区间中心之间的最小距离。太近的区间只保留分数更高者，避免相近价位互相干扰；主流币建议 2.25～3.00；设为0可禁用。",
      group = GROUP_CORE
  )
 string widthInput = input.string(
@@ -128,12 +228,12 @@ string labelSizeInput = input.string(
      group = GROUP_DISPLAY
  )
 float maxDistanceAtrInput = input.float(
-     12.0,
+     14.0,
      "最大显示距离（ATR）",
      minval = 2.0,
      maxval = 30.0,
      step = 1.0,
-     tooltip = "隐藏距离现价过远的历史区间。",
+     tooltip = "隐藏距离现价过远的历史区间。加密货币趋势延伸更远，可适当调大。",
      group = GROUP_DISPLAY
 )
 color heatColorInput = input.color(
@@ -144,7 +244,7 @@ color heatColorInput = input.color(
 )
 
 float touchWeightInput = input.float(
-     40.0,
+     50.0,
      "触及与拒绝权重",
      minval = 0.0,
      maxval = 100.0,
@@ -152,7 +252,7 @@ float touchWeightInput = input.float(
      group = GROUP_ADVANCED
 )
 float roleWeightInput = input.float(
-     20.0,
+     25.0,
      "多空转换权重",
      minval = 0.0,
      maxval = 100.0,
@@ -160,7 +260,7 @@ float roleWeightInput = input.float(
      group = GROUP_ADVANCED
 )
 float volumeWeightInput = input.float(
-     20.0,
+     25.0,
      "相对成交量权重",
      minval = 0.0,
      maxval = 100.0,
@@ -168,7 +268,7 @@ float volumeWeightInput = input.float(
      group = GROUP_ADVANCED
 )
 float gapWeightInput = input.float(
-     10.0,
+     5.0,
      "缺口权重",
      minval = 0.0,
      maxval = 100.0,
@@ -261,8 +361,9 @@ f_decay_zone(Zone zone) =>
 
 f_event_half_width(float price, float eventAtr, float widthFactor) =>
     float rawWidth = eventAtr * widthFactor
-    float minWidth = math.max(price * 0.0008, syminfo.mintick * 4.0)
-    float maxWidth = math.max(price * 0.0030, minWidth)
+    // 加密货币单根K线波动更大，放宽上下限以避免区间被压得过窄
+    float minWidth = math.max(price * 0.0015, syminfo.mintick * 5.0)
+    float maxWidth = math.max(price * 0.0060, minWidth)
     f_clamp(rawWidth, minWidth, maxWidth)
 
 f_auto_round_steps(float price, float manualStep, bool useManual) =>
@@ -273,18 +374,34 @@ f_auto_round_steps(float price, float manualStep, bool useManual) =>
         minorStep := manualStep
         majorStep := manualStep * 2.0
         superStep := manualStep * 10.0
+    else if price < 1.0
+        minorStep := 0.01
+        majorStep := 0.05
+        superStep := 0.10
+    else if price < 10.0
+        minorStep := 0.05
+        majorStep := 0.10
+        superStep := 1.00
     else if price < 100.0
+        minorStep := 0.50
+        majorStep := 1.00
+        superStep := 5.00
+    else if price < 1000.0
         minorStep := 1.0
         majorStep := 5.0
         superStep := 10.0
-    else if price < 1000.0
+    else if price < 10000.0
         minorStep := 5.0
         majorStep := 10.0
-        superStep := 50.0
-    else
-        minorStep := 10.0
-        majorStep := 50.0
         superStep := 100.0
+    else if price < 100000.0
+        minorStep := 50.0
+        majorStep := 100.0
+        superStep := 1000.0
+    else
+        minorStep := 100.0
+        majorStep := 1000.0
+        superStep := 5000.0
     [minorStep, majorStep, superStep]
 
 f_near_grid(float price, float step, float tolerance) =>
@@ -583,10 +700,12 @@ f_update_zone(
         if zone.pendingTouchSide != 0 and currentAtr > 0.0
             displacement := zone.pendingTouchSide * (close - zone.center) / currentAtr
         if displacement > 0.0
-            float rejectionEvidence = f_clamp(displacement, 0.0, 1.25)
+            // 加密货币杠杆清算常造成更深的插针与更猛烈的反向，
+            // 因此放大拒绝幅度的计分上限
+            float rejectionEvidence = f_clamp(displacement, 0.0, 1.50)
             f_add_evidence(zone, rejectionEvidence, 0.0, 0.0, 0.0)
             if zone.pendingRole
-                float roleEvidence = f_clamp(0.50 + displacement, 0.0, 1.25)
+                float roleEvidence = f_clamp(0.50 + displacement, 0.0, 1.50)
                 f_add_evidence(zone, 0.0, roleEvidence, 0.0, 0.0)
         zone.pendingTouchBar := int(na)
         zone.pendingTouchSide := 0
@@ -598,8 +717,9 @@ f_update_zone(
         int approachSide = close[1] > zoneTop ? 1 : close[1] < zoneBottom ? -1 : 0
         int currentDay = time("D")
         bool distinctDay = na(zone.lastTouchDay) or currentDay != zone.lastTouchDay
-        float baseTouch = 0.45 + (distinctDay ? 0.20 : 0.0)
-        float volumeEvidence = f_clamp((relativeVolume - 1.0) * 0.50, 0.0, 1.00)
+        // 加密货币清算扫盘带来的触及更频繁、更有意义，抬高基础触及分
+        float baseTouch = 0.50 + (distinctDay ? 0.25 : 0.0)
+        float volumeEvidence = f_clamp((relativeVolume - 1.0) * 0.60, 0.0, 1.25)
         f_add_evidence(zone, baseTouch, 0.0, volumeEvidence, 0.0)
         zone.lastTouchBar := bar_index
         zone.lastTouchDay := currentDay
@@ -673,9 +793,9 @@ f_engine(
 
         int pivotLegs = sensitivity == "保守" ? 5 : sensitivity == "密集" ? 3 : 4
         int cooldownBars = sensitivity == "保守" ? 7 : sensitivity == "密集" ? 3 : 5
-        float gapAtrThreshold = sensitivity == "保守" ? 0.50 : sensitivity == "密集" ? 0.25 : 0.35
-        float relativeVolumeThreshold = sensitivity == "保守" ? 1.80 : sensitivity == "密集" ? 1.25 : 1.50
-        float wickThreshold = sensitivity == "保守" ? 0.45 : sensitivity == "密集" ? 0.25 : 0.35
+        float gapAtrThreshold = sensitivity == "保守" ? 0.60 : sensitivity == "密集" ? 0.30 : 0.40
+        float relativeVolumeThreshold = sensitivity == "保守" ? 1.80 : sensitivity == "密集" ? 1.20 : 1.40
+        float wickThreshold = sensitivity == "保守" ? 0.50 : sensitivity == "密集" ? 0.30 : 0.40
 
         int existingCount = array.size(zones)
         if existingCount > 0
@@ -729,22 +849,36 @@ f_engine(
             )
             candidateAdded := true
 
-        // 新交易日首根K线用于识别常规时段跳空
-        if newTradingDay and not na(close[1]) and not na(currentAtr[1])
+        // 加密货币全天交易没有传统“隔夜缺口”，改为识别相邻1小时K线之间
+        // 无重叠的显著跳空（常由杠杆清算瀑布、插针或突发消息造成）。
+        // 跳空上下边界同样可能成为后续支撑/阻力或回补目标。
+        if not na(close[1]) and not na(currentAtr[1]) and currentAtr[1] > 0.0
             float previousClose = close[1]
+            float previousHigh = high[1]
+            float previousLow = low[1]
             float gapAtr = currentAtr[1]
-            float gapSize = math.abs(open - previousClose)
-            float minimumGap = math.max(gapAtr * gapAtrThreshold, previousClose * 0.0030)
-            if gapSize >= minimumGap
-                int gapDirection = open > previousClose ? 1 : -1
-                bool filledOnOpeningBar = (
-                     gapDirection == 1 and low <= previousClose
-                ) or (
-                     gapDirection == -1 and high >= previousClose
-                )
+            float upGapSize = open - previousHigh
+            float downGapSize = previousLow - open
+            float minimumGap = math.max(gapAtr * gapAtrThreshold, previousClose * 0.0040)
+            int gapDirection = 0
+            float lowerEdge = na
+            float upperEdge = na
+            float gapFillPrice = na
+            bool filledOnOpeningBar = false
+            if upGapSize >= minimumGap
+                gapDirection := 1
+                lowerEdge := previousHigh
+                upperEdge := open
+                gapFillPrice := previousHigh
+                filledOnOpeningBar := low <= previousHigh
+            else if downGapSize >= minimumGap
+                gapDirection := -1
+                lowerEdge := open
+                upperEdge := previousLow
+                gapFillPrice := previousLow
+                filledOnOpeningBar := high >= previousLow
+            if gapDirection != 0
                 float openingGapEvidence = filledOnOpeningBar ? 0.0 : 1.0
-                float lowerEdge = math.min(open, previousClose)
-                float upperEdge = math.max(open, previousClose)
                 float lowerWidth = f_event_half_width(lowerEdge, gapAtr, widthFactor)
                 float upperWidth = f_event_half_width(upperEdge, gapAtr, widthFactor)
                 f_add_candidate(
@@ -757,7 +891,7 @@ f_engine(
                      openingGapEvidence,
                      not filledOnOpeningBar,
                      gapDirection,
-                     previousClose,
+                     gapFillPrice,
                      close,
                      gapAtr
                 )
@@ -771,7 +905,7 @@ f_engine(
                      openingGapEvidence,
                      not filledOnOpeningBar,
                      gapDirection,
-                     previousClose,
+                     gapFillPrice,
                      close,
                      gapAtr
                 )
@@ -787,7 +921,7 @@ f_engine(
         )
             float lowerWickRatio = (math.min(open, close) - low) / candleRange
             float upperWickRatio = (high - math.max(open, close)) / candleRange
-            float volumeEvidence = f_clamp((relativeVolume - 1.0) * 0.75, 0.0, 1.20)
+            float volumeEvidence = f_clamp((relativeVolume - 1.0) * 0.90, 0.0, 1.50)
             if lowerWickRatio >= wickThreshold
                 float eventWidth = f_event_half_width(low, currentAtr, widthFactor)
                 int lowerTarget = f_find_merge_target(zones, low, eventWidth, false, 0, float(na))
@@ -1031,7 +1165,8 @@ f_engine(
     result
 
 // 将输入映射为稳定的内部参数
-float widthFactor = widthInput == "窄" ? 0.18 : widthInput == "宽" ? 0.30 : 0.23
+// 加密货币波动更大，区间宽度整体调宽
+float widthFactor = widthInput == "窄" ? 0.24 : widthInput == "宽" ? 0.40 : 0.30
 bool useManualRound = roundModeInput == "手动"
 bool supportedTimeframe = (
      timeframe.isintraday and
@@ -1039,9 +1174,10 @@ bool supportedTimeframe = (
      timeframe.in_seconds() <= 3600
 )
 
-string regularTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.regular)
+// 加密货币全天交易，使用 24/7 会话而不是常规交易时段
+string cryptoTicker = ticker.new(syminfo.prefix, syminfo.ticker, "24x7")
 ZoneSnapshot snapshot = request.security(
-     regularTicker,
+     cryptoTicker,
      ANALYSIS_TIMEFRAME,
      f_engine(
           sensitivityInput,
@@ -1144,7 +1280,7 @@ if barstate.islast
         statusText := "当前标的缺少成交量数据"
         statusColor := color.new(color.orange, 15)
     else if not historyReady
-        statusText := "历史数据不足，需要约120个交易日"
+        statusText := "历史数据不足，需要约90天"
         statusColor := color.new(color.orange, 15)
     table.cell(
          statusTable,
